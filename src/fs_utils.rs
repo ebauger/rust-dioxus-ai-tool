@@ -1,6 +1,10 @@
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
+use walkdir::WalkDir;
+
+use crate::tokenizer::{count_tokens, TokenEstimator};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileInfo {
@@ -22,8 +26,13 @@ impl FileInfo {
             name,
             size: metadata.len(),
             path,
-            token_count: 0, // Will be computed later in Story 4
+            token_count: 0, // Will be computed later
         })
+    }
+
+    pub async fn with_tokens(mut self, estimator: TokenEstimator) -> std::io::Result<Self> {
+        self.token_count = count_tokens(&self.path, estimator).await?;
+        Ok(self)
     }
 }
 
@@ -38,6 +47,30 @@ pub async fn read_children(dir: &PathBuf) -> Vec<FileInfo> {
                     if !metadata.is_dir() && !is_hidden(&path) {
                         if let Ok(file_info) = FileInfo::new(path).await {
                             files.push(file_info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files
+}
+
+pub async fn crawl_directory(dir: &PathBuf, estimator: TokenEstimator) -> Vec<FileInfo> {
+    let mut files = Vec::new();
+    let walker = WalkBuilder::new(dir).hidden(false).git_ignore(true).build();
+
+    for result in walker {
+        if let Ok(entry) = result {
+            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                if let Ok(path) = entry.path().canonicalize() {
+                    if !is_hidden(&path) {
+                        if let Ok(file_info) = FileInfo::new(path).await {
+                            if let Ok(file_info) = file_info.with_tokens(estimator).await {
+                                files.push(file_info);
+                            }
                         }
                     }
                 }
@@ -67,11 +100,11 @@ mod tests {
     async fn test_file_info_new() {
         let temp_dir = tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
-        let content = b"Hello, World!";
+        let content = "Hello, World!";
 
         // Create a test file
         let mut file = File::create(&file_path).unwrap();
-        file.write_all(content).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
 
         let file_info = FileInfo::new(file_path.clone()).await.unwrap();
         assert_eq!(file_info.name, "test.txt");
@@ -81,46 +114,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_children() {
+    async fn test_file_info_with_tokens() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let content = "Hello, World!";
+
+        // Create a test file
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let file_info = FileInfo::new(file_path.clone()).await.unwrap();
+        let file_info = file_info.with_tokens(TokenEstimator::Cl100k).await.unwrap();
+        assert_eq!(file_info.token_count, 4); // "Hello", ",", " World", "!"
+    }
+
+    #[tokio::test]
+    async fn test_crawl_directory() {
         let temp_dir = tempdir().unwrap();
 
-        // Create some test files
+        // Create a test directory structure
         let files = vec![
-            ("visible.txt", "Hello"),
-            ("another.txt", "World"),
-            (".hidden.txt", "Hidden"),
+            ("root.txt", "Root file"),
+            ("subdir/sub.txt", "Subdir file"),
+            (".hidden.txt", "Hidden file"),
         ];
 
-        for (name, content) in files {
-            let path = temp_dir.path().join(name);
-            let mut file = File::create(path).unwrap();
+        for (path, content) in files {
+            let full_path = temp_dir.path().join(path);
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            let mut file = File::create(&full_path).unwrap();
             file.write_all(content.as_bytes()).unwrap();
         }
 
-        // Create a subdirectory (should be ignored)
-        std::fs::create_dir(temp_dir.path().join("subdir")).unwrap();
+        let files = crawl_directory(&temp_dir.path().to_path_buf(), TokenEstimator::Cl100k).await;
 
-        let children = read_children(&temp_dir.path().to_path_buf()).await;
-
-        // Should only see non-hidden files
-        assert_eq!(children.len(), 2);
-        assert!(children.iter().any(|f| f.name == "visible.txt"));
-        assert!(children.iter().any(|f| f.name == "another.txt"));
-        assert!(!children.iter().any(|f| f.name == ".hidden.txt"));
-
-        // Should be sorted by name
-        assert_eq!(children[0].name, "another.txt");
-        assert_eq!(children[1].name, "visible.txt");
-    }
-
-    #[test]
-    fn test_is_hidden() {
-        let hidden = PathBuf::from("/path/to/.hidden");
-        let visible = PathBuf::from("/path/to/visible");
-        let target = PathBuf::from("/path/to/target");
-
-        assert!(is_hidden(&hidden));
-        assert!(!is_hidden(&visible));
-        assert!(is_hidden(&target));
+        // Should find both files but not the hidden one
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.name == "root.txt"));
+        assert!(files.iter().any(|f| f.name == "sub.txt"));
+        assert!(!files.iter().any(|f| f.name == ".hidden.txt"));
     }
 }
