@@ -1,9 +1,11 @@
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::fs;
-use walkdir::WalkDir;
+use tokio::sync::Semaphore;
 
+use crate::cache::{CacheEntry, TokenCache};
 use crate::tokenizer::{count_tokens, TokenEstimator};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,22 +63,75 @@ pub async fn read_children(dir: &PathBuf) -> Vec<FileInfo> {
 pub async fn crawl_directory(dir: &PathBuf, estimator: TokenEstimator) -> Vec<FileInfo> {
     let mut files = Vec::new();
     let walker = WalkBuilder::new(dir).hidden(false).git_ignore(true).build();
+    let semaphore = Arc::new(Semaphore::new(8)); // Limit to 8 concurrent tokenizations
+    let mut cache = match TokenCache::new(estimator).await {
+        Ok(cache) => cache,
+        Err(_) => TokenCache::new(estimator).await.unwrap(),
+    };
+    let mut tasks = Vec::new();
 
     for result in walker {
         if let Ok(entry) = result {
             if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 if let Ok(path) = entry.path().canonicalize() {
                     if !is_hidden(&path) {
-                        if let Ok(file_info) = FileInfo::new(path).await {
-                            if let Ok(file_info) = file_info.with_tokens(estimator).await {
-                                files.push(file_info);
+                        if let Ok(metadata) = fs::metadata(&path).await {
+                            let mtime = metadata
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+
+                            // Check cache first
+                            if let Some(cache_entry) = cache.get_entry(&path) {
+                                if cache_entry.mtime == mtime {
+                                    if let Ok(mut file_info) = FileInfo::new(path.clone()).await {
+                                        file_info.token_count = cache_entry.token_count;
+                                        files.push(file_info);
+                                        continue;
+                                    }
+                                }
                             }
+
+                            // If not in cache or outdated, tokenize
+                            let path_clone = path.clone();
+                            let semaphore_clone = semaphore.clone();
+                            let task = tokio::spawn(async move {
+                                let _permit = semaphore_clone.acquire().await.unwrap();
+                                if let Ok(file_info) = FileInfo::new(path_clone.clone()).await {
+                                    if let Ok(file_info) = file_info.with_tokens(estimator).await {
+                                        return Some((file_info, mtime, path_clone));
+                                    }
+                                }
+                                None
+                            });
+                            tasks.push(task);
                         }
                     }
                 }
             }
         }
     }
+
+    // Wait for all tokenization tasks to complete
+    for task in tasks {
+        if let Ok(Some((file_info, mtime, path))) = task.await {
+            // Update cache
+            cache.insert_entry(
+                path,
+                CacheEntry {
+                    token_count: file_info.token_count,
+                    mtime,
+                    hash: "".to_string(), // TODO: Implement file hashing if needed
+                },
+            );
+            files.push(file_info);
+        }
+    }
+
+    // Save updated cache
+    let _ = cache.save().await;
 
     files.sort_by(|a, b| a.name.cmp(&b.name));
     files
