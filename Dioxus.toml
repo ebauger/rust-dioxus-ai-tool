@@ -1,7 +1,7 @@
 [application]
 
 # App (Project) Name
-name = "rust-dioxus-ai-tool"
+name = "RepoPrompt Clone"
 
 # Dioxus App Default Platform
 # web, desktop, fullstack
@@ -16,7 +16,7 @@ asset_dir = "assets"
 [web.app]
 
 # HTML title tag content
-title = "rust-dioxus-ai-tool"
+title = "RepoPrompt Clone"
 
 [web.watcher]
 
@@ -30,9 +30,7 @@ watch_path = ["src", "assets"]
 [web.resource]
 
 # CSS style file
-
-style = ["/tailwind.css"]
-
+style = ["tailwind.css"]
 
 # Javascript code file
 script = []
@@ -42,3 +40,11 @@ script = []
 # Javascript code file
 # serve: [dev-server] only
 script = []
+
+[application.tools]
+binaryen = { wasm_opt = true }
+
+# Desktop Configuration
+[desktop]
+before_build = "npx tailwindcss -i ./input.css -o ./assets/tailwind.css"
+after_build = []

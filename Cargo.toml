@@ -7,11 +7,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-
-
-dioxus = { version = "0.5", features = ["desktop", "router"] }
-
-
+dioxus = { version = "0.5", features = ["desktop"] }
+dioxus-desktop = "0.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Debug
 dioxus-logger = "0.5.1"
@@ -28,13 +26,9 @@ inherits = "dev"
 [profile.android-dev]
 inherits = "dev"
 
-# Linting configuration
-[lints.workspace]
-warnings = "warn"
-unused = "warn"
-unused_extern_crates = "warn"
-unused_import_braces = "warn"
-unused_lifetimes = "warn"
-unused_qualifications = "warn"
-unused_results = "warn"
-unused_variables = "warn"
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
