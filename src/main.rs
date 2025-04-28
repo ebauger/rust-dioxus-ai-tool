@@ -9,6 +9,7 @@ mod fs_utils;
 mod settings;
 
 use components::{FileList, Toolbar};
+use fs_utils::FileInfo;
 use settings::Settings;
 
 fn main() {
@@ -21,9 +22,9 @@ fn main() {
 
 #[component]
 fn app() -> Element {
-    let settings = use_signal(|| Settings::default());
+    let _settings = use_signal(|| Settings::default());
     let mut current_dir = use_signal(|| PathBuf::from("."));
-    let mut files = use_signal(Vec::<PathBuf>::new);
+    let mut files = use_signal(Vec::<FileInfo>::new);
 
     use_effect(move || {
         let dir = current_dir.read().clone();
