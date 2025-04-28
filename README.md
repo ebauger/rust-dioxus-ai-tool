@@ -1,15 +1,41 @@
-# Development
+# RepoPrompt Clone
 
-1. Install npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
-2. Install the tailwind css cli: https://tailwindcss.com/docs/installation
-3. Run the following command in the root of the project to start the tailwind CSS compiler:
+A Dioxus-based desktop application for managing and analyzing code repositories.
 
-```bash
-npx tailwindcss -i ./input.css -o ./assets/tailwind.css --watch
-```
+## Features
 
-Run the following command in the root of the project to start the Dioxus dev server:
+- [ ] Folder/Workspace Selection
+- [ ] Basic File Listing
+- [ ] Recursive Crawl & Token Counting
+- [ ] File Selection & Checkbox Logic
+- [ ] Token Estimator Switching
+- [ ] Aggregate Counts & Footer Display
+- [ ] Sorting & Column Headers
+- [ ] Concatenate + Copy to Clipboard
+- [ ] Filtering Input
+- [ ] Styling with Tailwind
 
-```bash
-dx serve --hot-reload --platform desktop
-```
+## Development
+
+### Prerequisites
+
+- Rust (stable)
+- Node.js (for Tailwind CSS)
+- Dioxus CLI
+
+### Setup
+
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   cargo install dioxus-cli
+   npm install
+   ```
+3. Run the development server:
+   ```bash
+   cargo run
+   ```
+
+## License
+
+MIT
