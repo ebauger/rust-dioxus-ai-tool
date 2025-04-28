@@ -2,15 +2,25 @@
 
 use crate::fs_utils::FileInfo;
 use dioxus::prelude::*;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct FileListProps {
     files: Vec<FileInfo>,
+    selected_files: HashSet<PathBuf>,
+    on_select: EventHandler<PathBuf>,
+    on_deselect: EventHandler<PathBuf>,
 }
 
 #[component]
 pub fn FileList(props: FileListProps) -> Element {
-    let FileListProps { files } = props;
+    let FileListProps {
+        files,
+        selected_files,
+        on_select,
+        on_deselect,
+    } = props;
 
     rsx! {
         div {
@@ -27,15 +37,33 @@ pub fn FileList(props: FileListProps) -> Element {
                         li {
                             class: "flex items-center justify-between p-2 hover:bg-gray-100 rounded",
                             div {
-                                class: "flex items-center",
+                                class: "flex items-center space-x-2",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: selected_files.contains(&file.path),
+                                    onchange: move |e| {
+                                        if e.value().parse::<bool>().unwrap_or(false) {
+                                            on_select.call(file.path.clone());
+                                        } else {
+                                            on_deselect.call(file.path.clone());
+                                        }
+                                    }
+                                }
                                 span {
                                     class: "text-gray-900",
                                     "{file.name}",
                                 }
                             }
                             div {
-                                class: "text-gray-500 text-sm",
-                                "{format_size(file.size)}",
+                                class: "flex items-center space-x-4",
+                                span {
+                                    class: "text-gray-500 text-sm",
+                                    "{format_size(file.size)}",
+                                }
+                                span {
+                                    class: "text-gray-500 text-sm",
+                                    "{file.token_count} tokens",
+                                }
                             }
                         }
                     }
