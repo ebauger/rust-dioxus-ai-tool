@@ -1,0 +1,29 @@
+[package]
+name = "rust-dioxus-ai-tool"
+version = "0.1.0"
+authors = ["Etienne Beaudry Auger <etienne@beaudry-auger.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+
+dioxus = { version = "0.5", features = ["desktop", "router"] }
+
+
+
+# Debug
+dioxus-logger = "0.5.1"
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
