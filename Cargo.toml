@@ -27,3 +27,14 @@ inherits = "dev"
 
 [profile.android-dev]
 inherits = "dev"
+
+# Linting configuration
+[lints.workspace]
+warnings = "warn"
+unused = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+unused_results = "warn"
+unused_variables = "warn"

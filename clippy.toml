@@ -1,0 +1,3 @@
+# Deny warnings on CI, allow pedantic locally
+# This is a placeholder - actual clippy settings are typically configured in Cargo.toml
+# or via command line arguments 
