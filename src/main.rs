@@ -4,7 +4,6 @@ use dioxus::prelude::*;
 use dioxus_logger::tracing::{info, Level};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 mod cache;
@@ -14,7 +13,7 @@ mod settings;
 mod tokenizer;
 
 use components::{FileList, Footer, ProgressModal, Toolbar};
-use fs_utils::{FileInfo, ProgressCallback, ProgressState};
+use fs_utils::{FileInfo, ProgressState};
 use settings::Settings;
 use tokenizer::TokenEstimator;
 
@@ -41,7 +40,7 @@ fn app() -> Element {
             let dir = dir.clone();
             let mut progress = progress.clone();
 
-            let (status_tx, mut status_rx) = mpsc::channel(32);
+            let (_status_tx, mut status_rx) = mpsc::channel(32);
 
             spawn(async move {
                 // Just list files without processing tokens
@@ -158,6 +157,7 @@ fn app() -> Element {
                 },
                 has_files: !files.read().is_empty(),
                 current_estimator: estimator.read().clone(),
+                selected_files: selected_files.clone(),
             }
 
             FileList {
