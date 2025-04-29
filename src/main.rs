@@ -29,43 +29,89 @@ fn main() {
 #[component]
 fn app() -> Element {
     let _settings = use_signal(|| Settings::default());
-    let mut current_dir = use_signal(|| PathBuf::from("."));
+    let mut current_dir = use_signal(|| None::<PathBuf>);
     let mut files = use_signal(Vec::<FileInfo>::new);
     let mut selected_files = use_signal(HashSet::<PathBuf>::new);
     let mut estimator = use_signal(|| TokenEstimator::default());
     let progress = use_signal(|| ProgressState::new());
 
+    // Only process directory when it changes
     use_effect(move || {
-        let dir = current_dir.read().clone();
-        let estimator = estimator.read().clone();
-        let mut progress = progress.clone();
+        if let Some(dir) = current_dir.read().as_ref() {
+            let dir = dir.clone();
+            let mut progress = progress.clone();
 
-        let (tx, mut rx) = mpsc::channel(32);
-        let progress_callback: ProgressCallback =
-            Arc::new(Box::new(move |completed, total, message| {
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send((completed, total, message)).await;
-                });
-            }));
+            let (status_tx, mut status_rx) = mpsc::channel(32);
 
-        spawn(async move {
-            let new_files =
-                fs_utils::crawl_directory(&dir, estimator, Some(progress_callback)).await;
-            files.set(new_files);
-            selected_files.set(HashSet::new()); // Clear selection when directory changes
+            spawn(async move {
+                // Just list files without processing tokens
+                match fs_utils::list_files(&dir).await {
+                    Ok(new_files) => {
+                        files.set(new_files);
+                        selected_files.set(HashSet::new()); // Ensure no files are selected by default
+                    }
+                    Err(e) => {
+                        eprintln!("Error listing directory: {}", e);
+                    }
+                }
 
-            // Reset progress state
-            progress.set(ProgressState::new());
-        });
+                // Reset progress state
+                progress.set(ProgressState::new());
+            });
 
-        spawn(async move {
-            while let Some((completed, total, message)) = rx.recv().await {
-                let mut new_state = ProgressState::new();
-                new_state.update(completed, total, message);
-                progress.set(new_state);
-            }
-        });
+            spawn(async move {
+                while let Some((completed, total, message)) = status_rx.recv().await {
+                    let mut new_state = ProgressState::new();
+                    new_state.update(completed, total, message);
+                    progress.set(new_state);
+                }
+            });
+        }
+    });
+
+    // Process token counts for selected files
+    use_effect(move || {
+        let selected = selected_files.read().clone();
+        if !selected.is_empty() {
+            let mut files_signal = files.clone();
+            let estimator = estimator.read().clone();
+            let mut progress_signal = progress.clone();
+
+            let (status_tx, mut status_rx) = mpsc::channel(32);
+
+            spawn(async move {
+                let mut current_files = files_signal.read().clone();
+                let total = selected.len();
+                let mut processed = 0;
+
+                for file in &mut current_files {
+                    if selected.contains(&file.path) {
+                        match FileInfo::with_tokens(file.path.clone(), &estimator) {
+                            Ok(updated_file) => {
+                                *file = updated_file;
+                            }
+                            Err(e) => {
+                                eprintln!("Error processing file {}: {}", file.path.display(), e);
+                            }
+                        }
+                        processed += 1;
+                        let _ = status_tx
+                            .send((processed, total, "Processing files...".to_string()))
+                            .await;
+                    }
+                }
+
+                files_signal.write().clone_from(&current_files);
+            });
+
+            spawn(async move {
+                while let Some((completed, total, message)) = status_rx.recv().await {
+                    let mut new_state = ProgressState::new();
+                    new_state.update(completed, total, message);
+                    progress_signal.set(new_state);
+                }
+            });
+        }
     });
 
     // Add keyboard shortcuts
@@ -95,7 +141,7 @@ fn app() -> Element {
 
             Toolbar {
                 on_workspace_select: move |path| {
-                    current_dir.set(path);
+                    current_dir.set(Some(path));
                 },
                 on_select_all: move |_| {
                     let mut new_selection = HashSet::new();

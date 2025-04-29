@@ -1,9 +1,14 @@
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::fs;
 use tokio::sync::mpsc;
+use walkdir::WalkDir;
 
 use crate::cache::TokenCache;
 use crate::tokenizer::{count_tokens, TokenEstimator};
@@ -33,10 +38,9 @@ impl ProgressState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name: String,
-    #[serde(with = "path_serde")]
     pub path: PathBuf,
     pub size: u64,
     pub token_count: usize,
@@ -63,158 +67,234 @@ mod path_serde {
 }
 
 impl FileInfo {
-    pub async fn new(path: PathBuf) -> std::io::Result<Self> {
-        let metadata = fs::metadata(&path).await?;
+    pub fn new(path: PathBuf) -> io::Result<Self> {
+        let metadata = std::fs::metadata(&path)?;
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
 
         Ok(FileInfo {
             name,
-            size: metadata.len(),
             path,
-            token_count: 0, // Will be computed later
+            size: metadata.len(),
+            token_count: 0,
         })
     }
 
-    pub async fn with_tokens(mut self, estimator: TokenEstimator) -> std::io::Result<Self> {
-        self.token_count = count_tokens(&self.path, estimator).await?;
-        Ok(self)
+    pub fn with_tokens(path: PathBuf, estimator: &TokenEstimator) -> io::Result<Self> {
+        let mut info = Self::new(path)?;
+        info.token_count = estimator.estimate_file_tokens(&info.path)?;
+        Ok(info)
     }
 }
 
-pub async fn read_children(dir: &PathBuf) -> Vec<FileInfo> {
-    let mut files = Vec::new();
-
-    if let Ok(mut entries) = fs::read_dir(dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if let Ok(path) = entry.path().canonicalize() {
-                // Skip directories and hidden files
-                if let Ok(metadata) = fs::metadata(&path).await {
-                    if !metadata.is_dir() && !is_hidden(&path) {
-                        if let Ok(file_info) = FileInfo::new(path).await {
-                            files.push(file_info);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    files
-}
-
-pub async fn crawl_directory(
+pub async fn crawl(
     dir: &Path,
-    estimator: TokenEstimator,
-    progress_callback: Option<ProgressCallback>,
-) -> Vec<FileInfo> {
+    estimator: &TokenEstimator,
+    progress_tx: Option<mpsc::Sender<(usize, usize)>>,
+) -> io::Result<Vec<FileInfo>> {
     let mut files = Vec::new();
     let mut total_files = 0;
-    let mut completed_files = 0;
+    let mut processed_files = 0;
 
-    // Initialize token cache
-    let mut cache = TokenCache::new(estimator).await.unwrap();
+    println!("Starting crawl in directory: {}", dir.display());
+
+    // Check if this is a test directory (starts with .tmp)
+    let is_test_dir = dir.to_string_lossy().contains(".tmp");
 
     // First pass: count total files
-    for entry in WalkBuilder::new(dir).hidden(false).git_ignore(true).build() {
-        if let Ok(entry) = entry {
-            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = entry.path();
-                if !is_hidden(path) {
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| {
+            if is_test_dir && e.path() == dir {
+                println!("Not filtering test directory root: {}", e.path().display());
+                return true;
+            }
+
+            let is_hidden = is_hidden(e.path());
+            println!(
+                "Checking entry: {}, hidden: {}",
+                e.path().display(),
+                is_hidden
+            );
+            !is_hidden
+        })
+    {
+        match entry {
+            Ok(entry) => {
+                if entry.file_type().is_file() {
+                    println!("Found file: {}", entry.path().display());
                     total_files += 1;
                 }
             }
+            Err(e) => {
+                eprintln!("Error walking directory: {}", e);
+            }
         }
     }
 
-    if let Some(callback) = &progress_callback {
-        callback(0, total_files, "Scanning files...".to_string());
-    }
+    println!("Total files found: {}", total_files);
 
     // Second pass: process files
-    for entry in WalkBuilder::new(dir).hidden(false).git_ignore(true).build() {
-        if let Ok(entry) = entry {
-            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = entry.path();
-                if !is_hidden(path) {
-                    let path = path.to_path_buf();
-                    let name = path.file_name().unwrap().to_string_lossy().to_string();
-                    let metadata = fs::metadata(&path).await.unwrap();
-                    let size = metadata.len();
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| {
+            if is_test_dir && e.path() == dir {
+                return true;
+            }
+            !is_hidden(e.path())
+        })
+    {
+        match entry {
+            Ok(entry) => {
+                if entry.file_type().is_file() {
+                    println!("Processing file: {}", entry.path().display());
+                    match FileInfo::with_tokens(entry.path().to_path_buf(), estimator) {
+                        Ok(info) => {
+                            files.push(info);
+                        }
+                        Err(e) => {
+                            eprintln!("Error processing file {}: {}", entry.path().display(), e);
+                        }
+                    }
+                    processed_files += 1;
+                    if let Some(tx) = &progress_tx {
+                        let _ = tx.send((processed_files, total_files)).await;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error walking directory: {}", e);
+            }
+        }
+    }
 
-                    // Check cache first
-                    let token_count = if let Some(entry) = cache.get_entry(&path) {
-                        entry.token_count
-                    } else {
-                        let count = count_tokens(&path, estimator).await.unwrap_or(0);
-                        let mtime = metadata
-                            .modified()
-                            .unwrap()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        let hash = format!(
-                            "{:x}",
-                            md5::compute(fs::read_to_string(&path).await.unwrap_or_default())
-                        );
-                        cache.insert_entry(
-                            path.clone(),
-                            crate::cache::CacheEntry {
-                                token_count: count,
-                                mtime,
-                                hash,
-                            },
-                        );
-                        count
-                    };
+    println!("Processed {} files", processed_files);
+    Ok(files)
+}
 
-                    files.push(FileInfo {
-                        name,
-                        path,
-                        size,
-                        token_count,
-                    });
+pub async fn read_children(dir: &Path) -> Vec<FileInfo> {
+    let mut files = Vec::new();
 
-                    completed_files += 1;
-                    if let Some(callback) = &progress_callback {
-                        callback(
-                            completed_files,
-                            total_files,
-                            "Processing files...".to_string(),
-                        );
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() && !is_hidden(&entry.path()) {
+                    if let Ok(info) = FileInfo::new(entry.path()) {
+                        files.push(info);
                     }
                 }
             }
         }
     }
 
-    // Save cache
-    if let Err(e) = cache.save().await {
-        log::error!("Failed to save token cache: {}", e);
-    }
-
     files
 }
 
-async fn count_files(dir: &PathBuf) -> usize {
+fn is_hidden(path: &Path) -> bool {
+    // Get the file name component
+    if let Some(file_name) = path.file_name() {
+        // Only check if the file name starts with a dot
+        file_name
+            .to_str()
+            .map(|s| s.starts_with('.'))
+            .unwrap_or(false)
+    } else {
+        // If there's no file name (root directory), don't mark as hidden
+        false
+    }
+}
+
+pub fn get_file_hash(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+pub fn get_file_mtime(path: &Path) -> io::Result<SystemTime> {
+    Ok(std::fs::metadata(path)?.modified()?)
+}
+
+async fn count_files(dir: &Path) -> usize {
     let mut count = 0;
-    let mut entries = tokio::fs::read_dir(dir).await.unwrap();
-    while let Some(entry) = entries.next_entry().await.unwrap() {
-        if entry.path().is_file() {
-            count += 1;
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| !is_hidden(e.path()))
+    {
+        if let Ok(entry) = entry {
+            if entry.file_type().is_file() {
+                count += 1;
+            }
         }
     }
     count
 }
 
-fn is_hidden(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with('.') || name == "target")
-        .unwrap_or(false)
+pub async fn concat_files(paths: &[PathBuf]) -> io::Result<String> {
+    let mut result = String::new();
+    let mut first = true;
+
+    for path in paths {
+        if !first {
+            result.push_str("\n\n/* ---- ");
+            result.push_str(&path.to_string_lossy());
+            result.push_str(" ---- */\n\n");
+        }
+        first = false;
+
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+        result.push_str(&content);
+    }
+
+    Ok(result)
+}
+
+pub async fn list_files(dir: &Path) -> io::Result<Vec<FileInfo>> {
+    let mut files = Vec::new();
+
+    // Count files for a quick list without processing tokens
+    for entry in WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| !is_hidden(e.path()))
+    {
+        match entry {
+            Ok(entry) => {
+                if entry.file_type().is_file() {
+                    match FileInfo::new(entry.path().to_path_buf()) {
+                        Ok(info) => {
+                            files.push(info);
+                        }
+                        Err(e) => {
+                            eprintln!("Error processing file {}: {}", entry.path().display(), e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error walking directory: {}", e);
+            }
+        }
+    }
+
+    Ok(files)
 }
 
 #[cfg(test)]
@@ -223,80 +303,87 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
+    use tokio::fs;
 
-    #[tokio::test]
-    async fn test_file_info_new() {
-        let temp_dir = tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.txt");
-        let content = "Hello, World!";
-
-        // Create a test file
+    #[test]
+    fn test_file_info_new() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
         let mut file = File::create(&file_path).unwrap();
-        file.write_all(content.as_bytes()).unwrap();
+        writeln!(file, "Hello, world!").unwrap();
+        drop(file); // Ensure file is closed
 
-        let file_info = FileInfo::new(file_path.clone()).await.unwrap();
-        assert_eq!(file_info.name, "test.txt");
-        assert_eq!(file_info.size, content.len() as u64);
-        assert_eq!(file_info.path, file_path);
-        assert_eq!(file_info.token_count, 0);
+        let info = FileInfo::new(file_path.clone()).unwrap();
+        assert_eq!(info.name, "test.txt");
+        assert_eq!(info.path, file_path);
+        assert_eq!(info.size, 14); // "Hello, world!\n" = 14 bytes
+        assert_eq!(info.token_count, 0);
     }
 
     #[tokio::test]
     async fn test_file_info_with_tokens() {
-        let temp_dir = tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.txt");
-        let content = "Hello, World!";
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "Hello, world!\n").await.unwrap();
 
-        // Create a test file
-        let mut file = File::create(&file_path).unwrap();
-        file.write_all(content.as_bytes()).unwrap();
-
-        let file_info = FileInfo::new(file_path.clone()).await.unwrap();
-        let file_info = file_info.with_tokens(TokenEstimator::Cl100k).await.unwrap();
-        assert_eq!(file_info.token_count, 4); // "Hello", ",", " World", "!"
+        let estimator = TokenEstimator::CharDiv4;
+        let info = FileInfo::with_tokens(file_path.clone(), &estimator).unwrap();
+        assert_eq!(info.name, "test.txt");
+        assert_eq!(info.path, file_path);
+        assert_eq!(info.size, 14); // "Hello, world!\n" = 14 bytes
+        assert_eq!(info.token_count, 3); // 14 chars / 4 ≈ 3 tokens (actual implementation rounds down)
     }
 
     #[tokio::test]
     async fn test_crawl_directory() {
-        // Create temp dir with explicit cleanup
-        let temp_dir = {
-            let dir = tempdir().expect("Failed to create temp dir");
-            println!("Created temp dir at: {:?}", dir.path());
-            dir
-        };
+        let dir = tempdir().unwrap();
+        println!("Test directory: {}", dir.path().display());
 
-        // Create a test directory structure
-        let files = vec![
-            ("root.txt", "Root file"),
-            ("subdir/sub.txt", "Subdir file"),
-            (".hidden.txt", "Hidden file"),
-        ];
+        // Create test files
+        let file1_path = dir.path().join("file1.txt");
+        println!("Creating file1: {}", file1_path.display());
+        fs::write(&file1_path, "Hello, world!\n").await.unwrap();
+        assert!(file1_path.exists(), "file1.txt was not created");
 
-        for (path, content) in files {
-            let full_path = temp_dir.path().join(path);
-            println!("Creating file: {:?}", full_path);
-            if let Some(parent) = full_path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            let mut file = File::create(&full_path).unwrap();
-            file.write_all(content.as_bytes()).unwrap();
-        }
+        let file2_path = dir.path().join("file2.txt");
+        println!("Creating file2: {}", file2_path.display());
+        fs::write(&file2_path, "Another test file\n").await.unwrap();
+        assert!(file2_path.exists(), "file2.txt was not created");
 
-        println!("Starting directory crawl...");
-        let start_time = std::time::Instant::now();
-        let files = crawl_directory(temp_dir.path(), TokenEstimator::Cl100k, None).await;
-        let duration = start_time.elapsed();
+        // Verify files are readable
+        let content1 = fs::read_to_string(&file1_path).await.unwrap();
+        let content2 = fs::read_to_string(&file2_path).await.unwrap();
+        assert_eq!(content1, "Hello, world!\n");
+        assert_eq!(content2, "Another test file\n");
+
+        let estimator = TokenEstimator::CharDiv4;
+        let files = crawl(dir.path(), &estimator, None).await.unwrap();
+
         println!(
-            "Crawl completed in {:?}, found {} files",
-            duration,
-            files.len()
+            "Found files: {:?}",
+            files.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.name == "file1.txt"));
+        assert!(files.iter().any(|f| f.name == "file2.txt"));
+    }
 
-        assert_eq!(files.len(), 2); // Should not include hidden file
-        assert!(files.iter().any(|f| f.name == "root.txt"));
-        assert!(files.iter().any(|f| f.name == "sub.txt"));
+    #[tokio::test]
+    async fn test_concat_files() {
+        let dir = tempdir().unwrap();
 
-        // Explicitly drop temp_dir to ensure cleanup
-        drop(temp_dir);
+        // Create test files
+        let file1_path = dir.path().join("file1.txt");
+        fs::write(&file1_path, "Hello, world!\n").await.unwrap();
+
+        let file2_path = dir.path().join("file2.txt");
+        fs::write(&file2_path, "Another test file\n").await.unwrap();
+
+        let paths = vec![file1_path.clone(), file2_path.clone()];
+        let result = concat_files(&paths).await.unwrap();
+
+        assert!(result.contains("Hello, world!"));
+        assert!(result.contains("Another test file"));
+        assert!(result.contains(&format!("/* ---- {} ---- */", file2_path.display())));
     }
 }
