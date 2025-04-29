@@ -13,7 +13,7 @@ mod fs_utils;
 mod settings;
 mod tokenizer;
 
-use components::{FileList, ProgressModal, Toolbar};
+use components::{FileList, Footer, ProgressModal, Toolbar};
 use fs_utils::{FileInfo, ProgressCallback, ProgressState};
 use settings::Settings;
 use tokenizer::TokenEstimator;
@@ -127,6 +127,12 @@ fn app() -> Element {
                 on_deselect_all: move |_| {
                     selected_files.set(HashSet::new());
                 },
+            }
+
+            Footer {
+                files: files.read().clone(),
+                selected_files: selected_files.clone(),
+                current_estimator: estimator.read().clone(),
             }
 
             if show_progress {

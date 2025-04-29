@@ -6,6 +6,19 @@ use std::path::PathBuf;
 
 use crate::fs_utils::FileInfo;
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum SortColumn {
+    Name,
+    Size,
+    Tokens,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct FileListProps {
     files: Vec<FileInfo>,
@@ -23,8 +36,23 @@ pub fn FileList(props: FileListProps) -> Element {
         on_deselect_all,
     } = props;
 
+    let mut sort_state = use_signal(|| (SortColumn::Name, SortDirection::Ascending));
+    let (sort_column, sort_direction) = *sort_state.read();
+
     // Create separate clones for each usage
-    let files_for_ui = files.clone();
+    let mut sorted_files = files.clone();
+    sorted_files.sort_by_cached_key(|file| match sort_column {
+        SortColumn::Name => file.name.clone(),
+        SortColumn::Size => file.size.to_string(),
+        SortColumn::Tokens => file.token_count.to_string(),
+    });
+
+    if sort_direction == SortDirection::Descending {
+        sorted_files.reverse();
+    }
+
+    let sorted_files = sorted_files; // Make immutable after sorting
+
     let mut selected_files_for_ui = selected_files.clone();
 
     let mut toggle_selected = move |path: PathBuf| {
@@ -37,11 +65,29 @@ pub fn FileList(props: FileListProps) -> Element {
         selected_files_for_ui.set(new_selection);
     };
 
+    let mut toggle_sort = move |column: SortColumn| {
+        let (current_column, current_direction) = *sort_state.read();
+        if current_column == column {
+            // Toggle direction if clicking same column
+            sort_state.set((
+                column,
+                match current_direction {
+                    SortDirection::Ascending => SortDirection::Descending,
+                    SortDirection::Descending => SortDirection::Ascending,
+                },
+            ));
+        } else {
+            // Switch to new column, default to ascending
+            sort_state.set((column, SortDirection::Ascending));
+        }
+    };
+
     // Add keyboard shortcuts for individual file selection
+    let sorted_files_for_shortcuts = sorted_files.clone();
     use_effect(move || {
         // First keyboard shortcut
         let mut selected_files_up = selected_files.clone();
-        let files_up = files.clone();
+        let files_up = sorted_files_for_shortcuts.clone();
 
         let _ = dioxus::desktop::use_global_shortcut("Shift+ArrowUp", move || {
             let current_selection = selected_files_up.read().clone();
@@ -59,7 +105,7 @@ pub fn FileList(props: FileListProps) -> Element {
 
         // Second keyboard shortcut
         let mut selected_files_down = selected_files.clone();
-        let files_down = files.clone();
+        let files_down = sorted_files_for_shortcuts.clone();
 
         let _ = dioxus::desktop::use_global_shortcut("Shift+ArrowDown", move || {
             let current_selection = selected_files_down.read().clone();
@@ -92,53 +138,106 @@ pub fn FileList(props: FileListProps) -> Element {
                     "Deselect All"
                 }
             }
-            if files_for_ui.is_empty() {
+            if sorted_files.is_empty() {
                 div {
                     class: "text-gray-500 dark:text-gray-400 text-center py-4",
                     "No files loaded yet",
                 }
             } else {
-                ul {
-                    class: "divide-y divide-gray-200 dark:divide-gray-700",
-                    {files_for_ui.iter().map(|file| {
-                        let path = file.path.clone();
-                        rsx! {
-                            li {
-                                key: "{file.path.to_string_lossy()}",
-                                class: "flex items-center space-x-4 py-2 px-4 hover:bg-gray-50 dark:hover:bg-gray-800",
-                                div {
-                                    class: "flex items-center",
-                                    input {
-                                        r#type: "checkbox",
-                                        class: "h-4 w-4 text-blue-600",
-                                        checked: selected_files_for_ui.read().contains(&file.path),
-                                        onclick: move |_| {
-                                            let path = path.clone();
-                                            toggle_selected(path);
-                                        },
+                div {
+                    class: "overflow-x-auto",
+                    table {
+                        class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
+                        thead {
+                            class: "bg-gray-50 dark:bg-gray-800",
+                            tr {
+                                th {
+                                    class: "px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer",
+                                    onclick: move |_| toggle_sort(SortColumn::Name),
+                                    "Name",
+                                    if sort_column == SortColumn::Name {
+                                        span {
+                                            class: "ml-1",
+                                            if sort_direction == SortDirection::Ascending {
+                                                "↑"
+                                            } else {
+                                                "↓"
+                                            }
+                                        }
                                     }
                                 },
-                                div {
-                                    class: "flex-1 min-w-0",
-                                    span {
-                                        class: "text-sm font-medium text-gray-900 dark:text-gray-100",
-                                        "{file.name}",
+                                th {
+                                    class: "px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer",
+                                    onclick: move |_| toggle_sort(SortColumn::Size),
+                                    "Size",
+                                    if sort_column == SortColumn::Size {
+                                        span {
+                                            class: "ml-1",
+                                            if sort_direction == SortDirection::Ascending {
+                                                "↑"
+                                            } else {
+                                                "↓"
+                                            }
+                                        }
                                     }
                                 },
-                                div {
-                                    class: "flex items-center space-x-4",
-                                    span {
-                                        class: "text-sm text-gray-500 dark:text-gray-400",
-                                        "{format_size(file.size)}",
-                                    },
-                                    span {
-                                        class: "text-sm text-gray-500 dark:text-gray-400",
-                                        "{file.token_count} tokens",
+                                th {
+                                    class: "px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer",
+                                    onclick: move |_| toggle_sort(SortColumn::Tokens),
+                                    "Tokens",
+                                    if sort_column == SortColumn::Tokens {
+                                        span {
+                                            class: "ml-1",
+                                            if sort_direction == SortDirection::Ascending {
+                                                "↑"
+                                            } else {
+                                                "↓"
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        },
+                        tbody {
+                            class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+                            {sorted_files.iter().map(|file| {
+                                let path = file.path.clone();
+                                rsx! {
+                                    tr {
+                                        key: "{file.path.to_string_lossy()}",
+                                        class: "hover:bg-gray-50 dark:hover:bg-gray-800",
+                                        td {
+                                            class: "px-4 py-2 whitespace-nowrap",
+                                            div {
+                                                class: "flex items-center",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    class: "h-4 w-4 text-blue-600",
+                                                    checked: selected_files_for_ui.read().contains(&file.path),
+                                                    onclick: move |_| {
+                                                        let path = path.clone();
+                                                        toggle_selected(path);
+                                                    },
+                                                }
+                                                span {
+                                                    class: "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100",
+                                                    "{file.name}",
+                                                }
+                                            }
+                                        },
+                                        td {
+                                            class: "px-4 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400",
+                                            "{format_size(file.size)}",
+                                        },
+                                        td {
+                                            class: "px-4 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400",
+                                            "{file.token_count} tokens",
+                                        }
+                                    }
+                                }
+                            })}
                         }
-                    })}
+                    }
                 }
             }
         }
