@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::mpsc;
 
+use crate::cache::TokenCache;
 use crate::tokenizer::{count_tokens, TokenEstimator};
 
 pub type ProgressCallback = Arc<Box<dyn Fn(usize, usize, String) + Send + Sync>>;
@@ -114,6 +115,9 @@ pub async fn crawl_directory(
     let mut total_files = 0;
     let mut completed_files = 0;
 
+    // Initialize token cache
+    let mut cache = TokenCache::new(estimator).await.unwrap();
+
     // First pass: count total files
     for entry in WalkBuilder::new(dir).hidden(false).git_ignore(true).build() {
         if let Ok(entry) = entry {
@@ -141,7 +145,31 @@ pub async fn crawl_directory(
                     let metadata = fs::metadata(&path).await.unwrap();
                     let size = metadata.len();
 
-                    let token_count = count_tokens(&path, estimator).await.unwrap_or(0);
+                    // Check cache first
+                    let token_count = if let Some(entry) = cache.get_entry(&path) {
+                        entry.token_count
+                    } else {
+                        let count = count_tokens(&path, estimator).await.unwrap_or(0);
+                        let mtime = metadata
+                            .modified()
+                            .unwrap()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        let hash = format!(
+                            "{:x}",
+                            md5::compute(fs::read_to_string(&path).await.unwrap_or_default())
+                        );
+                        cache.insert_entry(
+                            path.clone(),
+                            crate::cache::CacheEntry {
+                                token_count: count,
+                                mtime,
+                                hash,
+                            },
+                        );
+                        count
+                    };
 
                     files.push(FileInfo {
                         name,
@@ -161,6 +189,11 @@ pub async fn crawl_directory(
                 }
             }
         }
+    }
+
+    // Save cache
+    if let Err(e) = cache.save().await {
+        log::error!("Failed to save token cache: {}", e);
     }
 
     files

@@ -3572,6 +3572,7 @@ dependencies = [
  "dirs-next",
  "ignore",
  "log",
+ "md5",
  "rfd",
  "serde",
  "serde_json",

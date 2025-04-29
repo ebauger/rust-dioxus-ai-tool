@@ -117,6 +117,16 @@ fn app() -> Element {
             FileList {
                 files: files.read().clone(),
                 selected_files: selected_files.clone(),
+                on_select_all: move |_| {
+                    let mut new_selection = HashSet::new();
+                    for file in files.read().iter() {
+                        new_selection.insert(file.path.clone());
+                    }
+                    selected_files.set(new_selection);
+                },
+                on_deselect_all: move |_| {
+                    selected_files.set(HashSet::new());
+                },
             }
 
             if show_progress {
