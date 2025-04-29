@@ -1,9 +1,11 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
+use regex::Regex;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::components::filter_input::FilterType;
 use crate::fs_utils::FileInfo;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -25,6 +27,10 @@ pub struct FileListProps {
     selected_files: Signal<HashSet<PathBuf>>,
     on_select_all: EventHandler<()>,
     on_deselect_all: EventHandler<()>,
+    #[props(default)]
+    filter_text: Option<Signal<String>>,
+    #[props(default)]
+    filter_type: Option<Signal<FilterType>>,
 }
 
 #[component]
@@ -34,13 +40,57 @@ pub fn FileList(props: FileListProps) -> Element {
         selected_files,
         on_select_all,
         on_deselect_all,
+        filter_text,
+        filter_type,
     } = props;
 
     let mut sort_state = use_signal(|| (SortColumn::Name, SortDirection::Ascending));
     let (sort_column, sort_direction) = *sort_state.read();
 
+    // Apply filters if present
+    let filtered_files = if let (Some(filter_text), Some(filter_type)) =
+        (filter_text.as_ref(), filter_type.as_ref())
+    {
+        let filter_text = filter_text.read().to_lowercase();
+        if filter_text.is_empty() {
+            files.clone()
+        } else {
+            let filter_type = *filter_type.read();
+            files
+                .iter()
+                .filter(|file| {
+                    match filter_type {
+                        FilterType::Substring => file.name.to_lowercase().contains(&filter_text),
+                        FilterType::Extension => {
+                            // Remove leading "." if present for consistent matching
+                            let ext = if filter_text.starts_with('.') {
+                                filter_text.as_str()
+                            } else {
+                                // Prepend "." to match file extensions
+                                &format!(".{}", filter_text)
+                            };
+                            file.name.to_lowercase().ends_with(ext)
+                        }
+                        FilterType::Regex => {
+                            // Create a regex and try to match the filename
+                            if let Ok(re) = Regex::new(&filter_text) {
+                                re.is_match(&file.name)
+                            } else {
+                                // If regex is invalid, just use a substring search
+                                file.name.to_lowercase().contains(&filter_text)
+                            }
+                        }
+                    }
+                })
+                .cloned()
+                .collect()
+        }
+    } else {
+        files.clone()
+    };
+
     // Create separate clones for each usage
-    let mut sorted_files = files.clone();
+    let mut sorted_files = filtered_files;
     sorted_files.sort_by_cached_key(|file| match sort_column {
         SortColumn::Name => file.name.clone(),
         SortColumn::Size => file.size.to_string(),
@@ -141,7 +191,11 @@ pub fn FileList(props: FileListProps) -> Element {
             if sorted_files.is_empty() {
                 div {
                     class: "text-gray-500 dark:text-gray-400 text-center py-4",
-                    "No files loaded yet",
+                    if filter_text.is_some() && !filter_text.as_ref().unwrap().read().is_empty() {
+                        "No files match the filter"
+                    } else {
+                        "No files loaded yet"
+                    }
                 }
             } else {
                 div {

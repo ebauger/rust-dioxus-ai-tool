@@ -14,7 +14,7 @@ mod fs_utils;
 mod settings;
 mod tokenizer;
 
-use components::{FileList, Footer, ProgressModal, Toolbar};
+use components::{FileList, FilterInput, FilterType, Footer, ProgressModal, Toolbar};
 use fs_utils::{FileInfo, ProgressState};
 use settings::Settings;
 use tokenizer::TokenEstimator;
@@ -52,6 +52,10 @@ fn app() -> Element {
     let mut selected_files = use_signal(HashSet::<PathBuf>::new);
     let mut estimator = use_signal(|| TokenEstimator::default());
     let progress = use_signal(|| ProgressState::new());
+
+    // Add state for filtering
+    let filter_text = use_signal(|| String::new());
+    let filter_type = use_signal(|| FilterType::Substring);
 
     // Only process directory when it changes
     use_effect(move || {
@@ -179,9 +183,22 @@ fn app() -> Element {
                 selected_files: selected_files.clone(),
             }
 
+            // Only show filter if we have files
+            if !files.read().is_empty() {
+                div {
+                    class: "px-4",
+                    FilterInput {
+                        filter_text: filter_text.clone(),
+                        filter_type: filter_type.clone(),
+                    }
+                }
+            }
+
             FileList {
                 files: files.read().clone(),
                 selected_files: selected_files.clone(),
+                filter_text: Some(filter_text.clone()),
+                filter_type: Some(filter_type.clone()),
                 on_select_all: move |_| {
                     let mut new_selection = HashSet::new();
                     for file in files.read().iter() {

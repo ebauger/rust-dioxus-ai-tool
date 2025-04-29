@@ -1,3 +1,6 @@
+#![cfg(test)]
+
+use crate::components::file_list::{SortColumn, SortDirection};
 use crate::fs_utils::FileInfo;
 use std::path::PathBuf;
 

@@ -3853,6 +3853,7 @@ dependencies = [
  "log",
  "md5",
  "pretty_assertions",
+ "regex",
  "rfd",
  "serde",
  "serde_json",
