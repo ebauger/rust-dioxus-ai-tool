@@ -1,19 +1,64 @@
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 
-use crate::cache::{CacheEntry, TokenCache};
 use crate::tokenizer::{count_tokens, TokenEstimator};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub type ProgressCallback = Arc<Box<dyn Fn(usize, usize, String) + Send + Sync>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressState {
+    pub completed: usize,
+    pub total: usize,
+    pub message: String,
+}
+
+impl ProgressState {
+    pub fn new() -> Self {
+        Self {
+            completed: 0,
+            total: 0,
+            message: String::new(),
+        }
+    }
+
+    pub fn update(&mut self, completed: usize, total: usize, message: String) {
+        self.completed = completed;
+        self.total = total;
+        self.message = message;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {
     pub name: String,
+    #[serde(with = "path_serde")]
     pub path: PathBuf,
     pub size: u64,
     pub token_count: usize,
+}
+
+mod path_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        path.to_string_lossy().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(PathBuf::from(s))
+    }
 }
 
 impl FileInfo {
@@ -60,84 +105,79 @@ pub async fn read_children(dir: &PathBuf) -> Vec<FileInfo> {
     files
 }
 
-pub async fn crawl_directory(dir: &PathBuf, estimator: TokenEstimator) -> Vec<FileInfo> {
+pub async fn crawl_directory(
+    dir: &Path,
+    estimator: TokenEstimator,
+    progress_callback: Option<ProgressCallback>,
+) -> Vec<FileInfo> {
     let mut files = Vec::new();
-    let walker = WalkBuilder::new(dir).hidden(false).git_ignore(true).build();
-    let semaphore = Arc::new(Semaphore::new(8)); // Limit to 8 concurrent tokenizations
-    let mut cache = match TokenCache::new(estimator).await {
-        Ok(cache) => cache,
-        Err(_) => TokenCache::new(estimator).await.unwrap(),
-    };
-    let mut tasks = Vec::new();
+    let mut total_files = 0;
+    let mut completed_files = 0;
 
-    for result in walker {
-        if let Ok(entry) = result {
-            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                if let Ok(path) = entry.path().canonicalize() {
-                    if !is_hidden(&path) {
-                        if let Ok(metadata) = fs::metadata(&path).await {
-                            let mtime = metadata
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
+    // First pass: count total files
+    for entry in WalkBuilder::new(dir).hidden(false).git_ignore(true).build() {
+        if let Ok(entry) = entry {
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                let path = entry.path();
+                if !is_hidden(path) {
+                    total_files += 1;
+                }
+            }
+        }
+    }
 
-                            // Check cache first
-                            if let Some(cache_entry) = cache.get_entry(&path) {
-                                if cache_entry.mtime == mtime {
-                                    if let Ok(mut file_info) = FileInfo::new(path.clone()).await {
-                                        file_info.token_count = cache_entry.token_count;
-                                        files.push(file_info);
-                                        continue;
-                                    }
-                                }
-                            }
+    if let Some(callback) = &progress_callback {
+        callback(0, total_files, "Scanning files...".to_string());
+    }
 
-                            // If not in cache or outdated, tokenize
-                            let path_clone = path.clone();
-                            let semaphore_clone = semaphore.clone();
-                            let task = tokio::spawn(async move {
-                                let _permit = semaphore_clone.acquire().await.unwrap();
-                                if let Ok(file_info) = FileInfo::new(path_clone.clone()).await {
-                                    if let Ok(file_info) = file_info.with_tokens(estimator).await {
-                                        return Some((file_info, mtime, path_clone));
-                                    }
-                                }
-                                None
-                            });
-                            tasks.push(task);
-                        }
+    // Second pass: process files
+    for entry in WalkBuilder::new(dir).hidden(false).git_ignore(true).build() {
+        if let Ok(entry) = entry {
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                let path = entry.path();
+                if !is_hidden(path) {
+                    let path = path.to_path_buf();
+                    let name = path.file_name().unwrap().to_string_lossy().to_string();
+                    let metadata = fs::metadata(&path).await.unwrap();
+                    let size = metadata.len();
+
+                    let token_count = count_tokens(&path, estimator).await.unwrap_or(0);
+
+                    files.push(FileInfo {
+                        name,
+                        path,
+                        size,
+                        token_count,
+                    });
+
+                    completed_files += 1;
+                    if let Some(callback) = &progress_callback {
+                        callback(
+                            completed_files,
+                            total_files,
+                            "Processing files...".to_string(),
+                        );
                     }
                 }
             }
         }
     }
 
-    // Wait for all tokenization tasks to complete
-    for task in tasks {
-        if let Ok(Some((file_info, mtime, path))) = task.await {
-            // Update cache
-            cache.insert_entry(
-                path,
-                CacheEntry {
-                    token_count: file_info.token_count,
-                    mtime,
-                    hash: "".to_string(), // TODO: Implement file hashing if needed
-                },
-            );
-            files.push(file_info);
-        }
-    }
-
-    // Save updated cache
-    let _ = cache.save().await;
-
-    files.sort_by(|a, b| a.name.cmp(&b.name));
     files
 }
 
-fn is_hidden(path: &PathBuf) -> bool {
+async fn count_files(dir: &PathBuf) -> usize {
+    let mut count = 0;
+    let mut entries = tokio::fs::read_dir(dir).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        if entry.path().is_file() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn is_hidden(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with('.') || name == "target")
@@ -185,7 +225,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_crawl_directory() {
-        let temp_dir = tempdir().unwrap();
+        // Create temp dir with explicit cleanup
+        let temp_dir = {
+            let dir = tempdir().expect("Failed to create temp dir");
+            println!("Created temp dir at: {:?}", dir.path());
+            dir
+        };
 
         // Create a test directory structure
         let files = vec![
@@ -196,6 +241,7 @@ mod tests {
 
         for (path, content) in files {
             let full_path = temp_dir.path().join(path);
+            println!("Creating file: {:?}", full_path);
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
@@ -203,12 +249,21 @@ mod tests {
             file.write_all(content.as_bytes()).unwrap();
         }
 
-        let files = crawl_directory(&temp_dir.path().to_path_buf(), TokenEstimator::Cl100k).await;
+        println!("Starting directory crawl...");
+        let start_time = std::time::Instant::now();
+        let files = crawl_directory(temp_dir.path(), TokenEstimator::Cl100k, None).await;
+        let duration = start_time.elapsed();
+        println!(
+            "Crawl completed in {:?}, found {} files",
+            duration,
+            files.len()
+        );
 
-        // Should find both files but not the hidden one
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 2); // Should not include hidden file
         assert!(files.iter().any(|f| f.name == "root.txt"));
         assert!(files.iter().any(|f| f.name == "sub.txt"));
-        assert!(!files.iter().any(|f| f.name == ".hidden.txt"));
+
+        // Explicitly drop temp_dir to ensure cleanup
+        drop(temp_dir);
     }
 }

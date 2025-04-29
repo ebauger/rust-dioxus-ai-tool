@@ -14,8 +14,42 @@ pub struct CacheEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenCache {
+    #[serde(with = "path_map_serde")]
     entries: HashMap<PathBuf, CacheEntry>,
     estimator: TokenEstimator,
+}
+
+mod path_map_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(
+        map: &HashMap<PathBuf, super::CacheEntry>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let string_map: HashMap<String, super::CacheEntry> = map
+            .iter()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.clone()))
+            .collect();
+        string_map.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<PathBuf, super::CacheEntry>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string_map: HashMap<String, super::CacheEntry> = HashMap::deserialize(deserializer)?;
+        Ok(string_map
+            .into_iter()
+            .map(|(k, v)| (PathBuf::from(k), v))
+            .collect())
+    }
 }
 
 impl TokenCache {

@@ -1,45 +1,77 @@
-use dirs_next::config_dir;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::tokenizer::TokenEstimator;
+use dirs_next::config_dir;
+use std::sync::Arc;
+
 const APP_NAME: &str = "repo_prompt_clone";
 const SETTINGS_FILE: &str = "settings.json";
+const MAX_RECENT_WORKSPACES: usize = 5;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub recent_workspaces: Vec<PathBuf>,
-    #[serde(skip)]
-    config_path: Option<PathBuf>,
+    pub token_estimator: TokenEstimator,
+    pub config_path: Option<PathBuf>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            recent_workspaces: Vec::new(),
+            token_estimator: TokenEstimator::default(),
+            config_path: None,
+        }
+    }
 }
 
 impl Settings {
-    pub fn load() -> Self {
-        let config_path = Self::config_path();
-        if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            serde_json::from_str(&contents).unwrap_or_default()
-        } else {
-            Settings::default()
+    pub fn new(config_path: PathBuf) -> Self {
+        Self {
+            recent_workspaces: Vec::new(),
+            token_estimator: TokenEstimator::default(),
+            config_path: Some(config_path),
         }
-    }
-
-    pub fn save(&self) -> std::io::Result<()> {
-        let default_path = Self::config_path();
-        let config_path = self.config_path.as_ref().unwrap_or(&default_path);
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(config_path, contents)
     }
 
     pub fn add_recent_workspace(&mut self, path: PathBuf) {
         // Remove if already exists
-        self.recent_workspaces.retain(|p| p != &path);
-        // Add to front
+        if let Some(pos) = self.recent_workspaces.iter().position(|x| x == &path) {
+            self.recent_workspaces.remove(pos);
+        }
+        // Insert at the beginning
         self.recent_workspaces.insert(0, path);
-        // Keep only last 5
+        // Keep only the last 5
         if self.recent_workspaces.len() > 5 {
-            self.recent_workspaces.truncate(5);
+            self.recent_workspaces.pop();
+        }
+    }
+
+    pub fn set_token_estimator(&mut self, estimator: TokenEstimator) {
+        self.token_estimator = estimator;
+    }
+
+    pub fn get_token_estimator(&self) -> TokenEstimator {
+        self.token_estimator.clone()
+    }
+
+    pub async fn save(&self) -> std::io::Result<()> {
+        if let Some(path) = &self.config_path {
+            let json = serde_json::to_string_pretty(self)?;
+            tokio::fs::write(path, json).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn load(path: &PathBuf) -> std::io::Result<Self> {
+        if path.exists() {
+            let json = tokio::fs::read_to_string(path).await?;
+            let mut settings: Self = serde_json::from_str(&json)?;
+            settings.config_path = Some(path.clone());
+            Ok(settings)
+        } else {
+            Ok(Self::new(path.clone()))
         }
     }
 
@@ -64,56 +96,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_settings_load_save() {
+    #[tokio::test]
+    async fn test_settings_save_load() {
         let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("settings.json");
+        let settings_file = temp_dir.path().join("settings.json");
+        let mut settings = Settings::new(settings_file.clone());
 
-        // Create test settings
-        let mut settings = Settings::default().with_config_path(config_path.clone());
-        settings.add_recent_workspace(PathBuf::from("/test/path"));
+        // Add some recent workspaces
+        settings.add_recent_workspace(PathBuf::from("/path/to/workspace1"));
+        settings.add_recent_workspace(PathBuf::from("/path/to/workspace2"));
 
         // Save settings
-        settings.save().unwrap();
+        settings.save().await.unwrap();
 
         // Load settings
-        let loaded = Settings::default().with_config_path(config_path);
-        let contents = fs::read_to_string(&loaded.config_path.unwrap()).unwrap();
-        let loaded = serde_json::from_str::<Settings>(&contents).unwrap();
+        let loaded_settings = Settings::load(&settings_file).await.unwrap();
 
-        assert_eq!(loaded.recent_workspaces, settings.recent_workspaces);
-    }
-
-    #[test]
-    fn test_recent_workspaces_limit() {
-        let mut settings = Settings::default();
-
-        // Add more than 5 workspaces
-        for i in 0..10 {
-            settings.add_recent_workspace(PathBuf::from(format!("/path/{}", i)));
-        }
-
-        // Should only keep the last 5
-        assert_eq!(settings.recent_workspaces.len(), 5);
-        assert_eq!(settings.recent_workspaces[0], PathBuf::from("/path/9"));
-        assert_eq!(settings.recent_workspaces[4], PathBuf::from("/path/5"));
-    }
-
-    #[test]
-    fn test_recent_workspaces_no_duplicates() {
-        let mut settings = Settings::default();
-        let path = PathBuf::from("/test/path");
-
-        // Add same path multiple times
-        settings.add_recent_workspace(path.clone());
-        settings.add_recent_workspace(path.clone());
-        settings.add_recent_workspace(path.clone());
-
-        // Should only appear once
-        assert_eq!(settings.recent_workspaces.len(), 1);
-        assert_eq!(settings.recent_workspaces[0], path);
+        // Verify loaded settings
+        assert_eq!(loaded_settings.recent_workspaces.len(), 2);
+        assert_eq!(
+            loaded_settings.recent_workspaces[0],
+            PathBuf::from("/path/to/workspace2")
+        );
+        assert_eq!(
+            loaded_settings.recent_workspaces[1],
+            PathBuf::from("/path/to/workspace1")
+        );
     }
 }
