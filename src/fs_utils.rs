@@ -248,10 +248,50 @@ pub async fn concat_files(paths: &[PathBuf]) -> io::Result<String> {
     let mut result = String::new();
     let mut first = true;
 
+    // Find common parent directory for relative paths
+    let common_parent = if !paths.is_empty() {
+        // Start with the parent of the first path
+        let mut parent = paths[0].parent().unwrap_or(Path::new("")).to_path_buf();
+
+        // Walk up until we find a common parent for all paths
+        let mut found = false;
+        while !found {
+            found = true;
+            for path in paths {
+                if !path.starts_with(&parent) {
+                    found = false;
+                    if let Some(p) = parent.parent() {
+                        parent = p.to_path_buf();
+                    } else {
+                        // If we can't find a common parent, use an empty path
+                        parent = PathBuf::new();
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        parent
+    } else {
+        PathBuf::new()
+    };
+
     for path in paths {
         if !first {
             result.push_str("\n\n/* ---- ");
-            result.push_str(&path.to_string_lossy());
+
+            // Create a relative path from the common parent
+            let rel_path = path.strip_prefix(&common_parent).unwrap_or(path);
+
+            // Add "./" prefix for clarity if the path is relative
+            if !rel_path.has_root() && !rel_path.to_string_lossy().starts_with("./") {
+                result.push_str("./");
+            }
+
+            result.push_str(&rel_path.to_string_lossy());
             result.push_str(" ---- */\n\n");
         }
         first = false;
@@ -371,12 +411,17 @@ mod tests {
     #[tokio::test]
     async fn test_concat_files() {
         let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Create a nested directory structure
+        let nested_dir = dir_path.join("nested");
+        fs::create_dir(&nested_dir).await.unwrap();
 
         // Create test files
-        let file1_path = dir.path().join("file1.txt");
+        let file1_path = dir_path.join("file1.txt");
         fs::write(&file1_path, "Hello, world!\n").await.unwrap();
 
-        let file2_path = dir.path().join("file2.txt");
+        let file2_path = nested_dir.join("file2.txt");
         fs::write(&file2_path, "Another test file\n").await.unwrap();
 
         let paths = vec![file1_path.clone(), file2_path.clone()];
@@ -384,6 +429,18 @@ mod tests {
 
         assert!(result.contains("Hello, world!"));
         assert!(result.contains("Another test file"));
-        assert!(result.contains(&format!("/* ---- {} ---- */", file2_path.display())));
+
+        // Check for relative paths in the output
+        assert!(
+            !result.contains(&format!("/* ---- {} ---- */", file2_path.display())),
+            "Output should not contain absolute paths"
+        );
+
+        // Should contain the relative path format
+        assert!(
+            result.contains("/* ---- ./nested/file2.txt ---- */")
+                || result.contains("/* ---- nested/file2.txt ---- */"),
+            "Output should contain relative path"
+        );
     }
 }

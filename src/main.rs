@@ -5,6 +5,8 @@ use dioxus_logger::tracing::{info, Level};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, prelude::*, registry};
 
 mod cache;
 mod components;
@@ -18,9 +20,26 @@ use settings::Settings;
 use tokenizer::TokenEstimator;
 
 fn main() {
-    // Init logger
-    dioxus_logger::init(Level::INFO).expect("failed to init logger");
-    info!("starting app");
+    // Set up file logging
+    let config_dir = dirs_next::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rust-dioxus-ai-tool");
+
+    // Create config directory if it doesn't exist
+    std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
+
+    let log_file_path = config_dir.join("app.log");
+    let file_appender = tracing_appender::rolling::daily(&config_dir, "app.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Set up logging to both console and file
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+        .with(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
+        .init();
+
+    info!("Starting app, logging to {}", log_file_path.display());
 
     dioxus::launch(app);
 }
