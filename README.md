@@ -1,4 +1,4 @@
-# RepoPrompt Clone
+# Context Loader
 
 A Dioxus-based desktop application for managing and analyzing code repositories.
 
