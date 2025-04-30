@@ -1,12 +1,12 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
-use dioxus_logger::tracing::{info, Level};
+use dioxus_desktop::launch;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::{fmt, prelude::*, registry};
+use tracing_subscriber::{fmt, prelude::*};
 
 mod cache;
 mod components;
@@ -36,12 +36,13 @@ fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
         .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
-        .with(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
+        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .init();
 
-    info!("Starting app, logging to {}", log_file_path.display());
+    tracing::info!("Starting app, logging to {}", log_file_path.display());
 
-    dioxus::launch(app);
+    // Use the new launch API
+    launch(app);
 }
 
 #[component]
