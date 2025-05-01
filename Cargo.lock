@@ -4127,6 +4127,7 @@ dependencies = [
  "ignore",
  "log",
  "md5",
+ "muda 0.11.5",
  "pretty_assertions",
  "regex",
  "rfd",

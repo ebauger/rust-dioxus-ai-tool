@@ -1,10 +1,11 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
-use dioxus_desktop::launch;
+use dioxus_desktop::muda;
+use dioxus_desktop::use_muda_event_handler;
+use dioxus_desktop::{Config, LogicalSize, WindowBuilder};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{fmt, prelude::*};
 
@@ -14,10 +15,272 @@ mod fs_utils;
 mod settings;
 mod tokenizer;
 
-use components::{FileList, FilterInput, FilterType, Footer, ProgressModal, Toolbar};
-use fs_utils::{FileInfo, ProgressState};
+use components::Toolbar;
 use settings::Settings;
-use tokenizer::TokenEstimator;
+
+// Define constant for max recent workspaces
+const MAX_RECENTS: usize = 5;
+
+// Store menu item IDs
+#[derive(Clone, PartialEq)]
+struct MenuIds {
+    open: muda::MenuId,
+    recent_items: Vec<muda::MenuId>,
+    clear_recents: muda::MenuId,
+}
+
+fn create_menu(settings: &Settings) -> (muda::Menu, MenuIds) {
+    // Create menu items
+    let open_item = muda::MenuItem::new("Open...", true, None);
+    let open_id = open_item.id().clone();
+    let close_item = muda::PredefinedMenuItem::close_window(None);
+
+    // Create recent workspace menu items
+    let mut recent_items = Vec::new();
+    let mut recent_menu_items = Vec::new();
+    let recent_workspaces = settings.get_recent_workspaces();
+
+    for path in recent_workspaces {
+        let path_str = path.to_string_lossy().into_owned();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&path_str);
+        let item = muda::MenuItem::new(name, true, None);
+        recent_items.push(item.id().clone());
+        recent_menu_items.push(item);
+    }
+
+    // Add "Clear Recent Workspaces" item if there are recent workspaces
+    let clear_item = muda::MenuItem::new(
+        "Clear Recent Workspaces",
+        !recent_workspaces.is_empty(),
+        None,
+    );
+    let clear_id = clear_item.id().clone();
+
+    // Create Recent Workspaces submenu
+    let mut menu_items = Vec::new();
+    for item in &recent_menu_items {
+        menu_items.push(item);
+    }
+
+    let mut submenu_items = Vec::new();
+    let mut owned_items = Vec::new();
+    if !recent_workspaces.is_empty() {
+        submenu_items.extend(menu_items.iter().map(|item| *item as &dyn muda::IsMenuItem));
+        owned_items.push(muda::PredefinedMenuItem::separator());
+        submenu_items.push(&owned_items[0]);
+        submenu_items.push(&clear_item);
+    }
+
+    let recent_submenu = muda::Submenu::with_items(
+        "Recent Workspaces",
+        !recent_workspaces.is_empty(),
+        &submenu_items,
+    )
+    .unwrap();
+
+    // Create File menu
+    let file_submenu = muda::Submenu::with_items(
+        "File",
+        true,
+        &[
+            &open_item,
+            &muda::PredefinedMenuItem::separator(),
+            &recent_submenu,
+            &muda::PredefinedMenuItem::separator(),
+            &close_item,
+        ],
+    )
+    .unwrap();
+
+    // Create main menu
+    let menu = muda::Menu::with_items(&[&file_submenu]).unwrap();
+
+    // Platform specific menus
+    #[cfg(target_os = "macos")]
+    {
+        let about_item = muda::PredefinedMenuItem::about(
+            None,
+            Some(muda::AboutMetadata {
+                name: Some("Rust Dioxus AI Tool".into()),
+                ..Default::default()
+            }),
+        );
+
+        let app_submenu = muda::Submenu::with_items(
+            "App",
+            true,
+            &[
+                &about_item,
+                &muda::PredefinedMenuItem::separator(),
+                &muda::PredefinedMenuItem::services(None),
+                &muda::PredefinedMenuItem::separator(),
+                &muda::PredefinedMenuItem::hide(None),
+                &muda::PredefinedMenuItem::hide_others(None),
+                &muda::PredefinedMenuItem::show_all(None),
+                &muda::PredefinedMenuItem::separator(),
+                &muda::PredefinedMenuItem::quit(None),
+            ],
+        )
+        .unwrap();
+
+        menu.append(&app_submenu).unwrap();
+    }
+
+    // Windows-specific menu initialization
+    #[cfg(target_os = "windows")]
+    {
+        let about_item = muda::PredefinedMenuItem::about(
+            None,
+            Some(muda::AboutMetadata {
+                name: Some("Rust Dioxus AI Tool".into()),
+                ..Default::default()
+            }),
+        );
+
+        let help_submenu = muda::Submenu::with_items("Help", true, &[&about_item]).unwrap();
+
+        menu.append(&help_submenu).unwrap();
+    }
+
+    // Linux-specific menu initialization
+    #[cfg(target_os = "linux")]
+    {
+        let about_item = muda::PredefinedMenuItem::about(
+            None,
+            Some(muda::AboutMetadata {
+                name: Some("Rust Dioxus AI Tool".into()),
+                ..Default::default()
+            }),
+        );
+
+        let help_submenu = muda::Submenu::with_items("Help", true, &[&about_item]).unwrap();
+
+        menu.append(&help_submenu).unwrap();
+    }
+
+    (
+        menu,
+        MenuIds {
+            open: open_id,
+            recent_items,
+            clear_recents: clear_id,
+        },
+    )
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct AppProps {
+    menu_ids: MenuIds,
+    settings: Settings,
+}
+
+fn app() -> Element {
+    let settings_file = dirs_next::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rust-dioxus-ai-tool")
+        .join("settings.json");
+    let settings = Settings::new(settings_file);
+    let (_menu, menu_ids) = create_menu(&settings);
+
+    let settings = use_signal(|| settings);
+    let current_workspace = use_signal(|| None::<PathBuf>);
+    let selected_files = use_signal(|| HashSet::new());
+
+    // Handle menu events
+    use_muda_event_handler(move |event| {
+        let mut settings = settings.clone();
+        let mut current_workspace = current_workspace.clone();
+        if event.id == menu_ids.open {
+            // Show file dialog to open workspace
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                // Handle opening workspace
+                println!("Opening workspace: {:?}", path);
+                current_workspace.set(Some(path.clone()));
+                spawn(async move {
+                    let mut current_settings = settings.read().clone();
+                    current_settings.add_recent_workspace(path.clone());
+                    if let Err(e) = current_settings.save().await {
+                        log::error!("Failed to save settings: {}", e);
+                    }
+                    settings.set(current_settings);
+                });
+            }
+        } else if menu_ids.recent_items.iter().any(|id| *id == event.id) {
+            // Find the selected recent workspace
+            let index = menu_ids
+                .recent_items
+                .iter()
+                .position(|id| *id == event.id)
+                .unwrap();
+            let path = settings.read().get_recent_workspaces()[index].clone();
+            println!("Opening recent workspace: {:?}", path);
+            current_workspace.set(Some(path.clone()));
+            spawn(async move {
+                let mut current_settings = settings.read().clone();
+                current_settings.add_recent_workspace(path.clone());
+                if let Err(e) = current_settings.save().await {
+                    log::error!("Failed to save settings: {}", e);
+                }
+                settings.set(current_settings);
+            });
+        } else if event.id == menu_ids.clear_recents {
+            // Clear recent workspaces
+            spawn(async move {
+                let mut current_settings = settings.read().clone();
+                current_settings.clear_recent_workspaces();
+                if let Err(e) = current_settings.save().await {
+                    log::error!("Failed to save settings: {}", e);
+                }
+                settings.set(current_settings);
+            });
+        }
+    });
+
+    rsx! {
+        div {
+            class: "flex flex-col h-screen",
+            if let Some(_) = current_workspace.read().as_ref() {
+                Toolbar {
+                    has_files: true,
+                    on_select_all: move |_| {
+                        // TODO: Implement select all
+                    },
+                    on_deselect_all: move |_| {
+                        // TODO: Implement deselect all
+                    },
+                    on_estimator_change: move |estimator| {
+                        let mut settings = settings.clone();
+                        spawn(async move {
+                            let mut current_settings = settings.read().clone();
+                            current_settings.set_token_estimator(estimator);
+                            if let Err(e) = current_settings.save().await {
+                                log::error!("Failed to save settings: {}", e);
+                            }
+                            settings.set(current_settings);
+                        });
+                    },
+                    current_estimator: settings.read().get_token_estimator(),
+                    selected_files: selected_files.clone(),
+                }
+            } else {
+                div {
+                    class: "flex flex-col items-center justify-center h-full",
+                    div {
+                        class: "text-2xl font-bold mb-4",
+                        "Welcome to Rust Dioxus AI Tool"
+                    }
+                    div {
+                        class: "text-lg text-gray-600",
+                        "Open a workspace to get started"
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn main() {
     // Set up file logging
@@ -28,203 +291,35 @@ fn main() {
     // Create config directory if it doesn't exist
     std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
 
-    let log_file_path = config_dir.join("app.log");
+    let _log_file_path = config_dir.join("app.log");
     let file_appender = tracing_appender::rolling::daily(&config_dir, "app.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Set up logging to both console and file
+    // Set up logging to both file and stdout with different filters
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::registry()
-        .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
-        .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
-        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with(fmt::layer().with_writer(non_blocking))
+        .with(fmt::layer().with_writer(std::io::stdout))
+        .with(
+            EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into())
+                .add_directive("dioxus=debug".parse().unwrap()),
+        )
         .init();
 
-    tracing::info!("Starting app, logging to {}", log_file_path.display());
+    // Launch app with configuration
+    let window = WindowBuilder::new()
+        .with_title("Rust Dioxus AI Tool")
+        .with_inner_size(LogicalSize::new(1200.0, 800.0))
+        .with_resizable(true);
 
-    // Use the new launch API
-    launch(app);
-}
+    let config = Config::default()
+        .with_window(window)
+        .with_custom_head(format!(
+            r#"<link rel="stylesheet" href="/{}"/>"#,
+            asset!("/assets/main.css")
+        ));
 
-#[component]
-fn app() -> Element {
-    let _settings = use_signal(|| Settings::default());
-    let mut current_dir = use_signal(|| None::<PathBuf>);
-    let mut files = use_signal(Vec::<FileInfo>::new);
-    let mut selected_files = use_signal(HashSet::<PathBuf>::new);
-    let mut estimator = use_signal(|| TokenEstimator::default());
-    let progress = use_signal(|| ProgressState::new());
-
-    // Add state for filtering
-    let filter_text = use_signal(|| String::new());
-    let filter_type = use_signal(|| FilterType::Substring);
-
-    // Only process directory when it changes
-    use_effect(move || {
-        if let Some(dir) = current_dir.read().as_ref() {
-            let dir = dir.clone();
-            let mut progress = progress.clone();
-
-            let (_status_tx, mut status_rx) = mpsc::channel(32);
-
-            spawn(async move {
-                // Just list files without processing tokens
-                match fs_utils::list_files(&dir).await {
-                    Ok(new_files) => {
-                        files.set(new_files);
-                        selected_files.set(HashSet::new()); // Ensure no files are selected by default
-                    }
-                    Err(e) => {
-                        eprintln!("Error listing directory: {}", e);
-                    }
-                }
-
-                // Reset progress state
-                progress.set(ProgressState::new());
-            });
-
-            spawn(async move {
-                while let Some((completed, total, message)) = status_rx.recv().await {
-                    let mut new_state = ProgressState::new();
-                    new_state.update(completed, total, message);
-                    progress.set(new_state);
-                }
-            });
-        }
-    });
-
-    // Process token counts for selected files
-    use_effect(move || {
-        let selected = selected_files.read().clone();
-        if !selected.is_empty() {
-            let mut files_signal = files.clone();
-            let estimator = estimator.read().clone();
-            let mut progress_signal = progress.clone();
-
-            let (status_tx, mut status_rx) = mpsc::channel(32);
-
-            spawn(async move {
-                let mut current_files = files_signal.read().clone();
-                let total = selected.len();
-                let mut processed = 0;
-
-                for file in &mut current_files {
-                    if selected.contains(&file.path) {
-                        match FileInfo::with_tokens(file.path.clone(), &estimator) {
-                            Ok(updated_file) => {
-                                *file = updated_file;
-                            }
-                            Err(e) => {
-                                eprintln!("Error processing file {}: {}", file.path.display(), e);
-                            }
-                        }
-                        processed += 1;
-                        let _ = status_tx
-                            .send((processed, total, "Processing files...".to_string()))
-                            .await;
-                    }
-                }
-
-                files_signal.write().clone_from(&current_files);
-            });
-
-            spawn(async move {
-                while let Some((completed, total, message)) = status_rx.recv().await {
-                    let mut new_state = ProgressState::new();
-                    new_state.update(completed, total, message);
-                    progress_signal.set(new_state);
-                }
-            });
-        }
-    });
-
-    // Add keyboard shortcuts
-    use_effect(move || {
-        let mut selected_files = selected_files.clone();
-        let files = files.read().clone();
-
-        let _ = dioxus::desktop::use_global_shortcut("Ctrl+A", move || {
-            let mut new_selection = HashSet::new();
-            for file in files.iter() {
-                new_selection.insert(file.path.clone());
-            }
-            selected_files.set(new_selection);
-        });
-
-        let _ = dioxus::desktop::use_global_shortcut("Escape", move || {
-            selected_files.set(HashSet::new());
-        });
-    });
-
-    let progress_state = progress.read();
-    let show_progress = !progress_state.message.is_empty();
-
-    rsx! {
-        div {
-            class: "flex flex-col h-screen",
-
-            Toolbar {
-                on_workspace_select: move |path| {
-                    current_dir.set(Some(path));
-                },
-                on_select_all: move |_| {
-                    let mut new_selection = HashSet::new();
-                    for file in files.read().iter() {
-                        new_selection.insert(file.path.clone());
-                    }
-                    selected_files.set(new_selection);
-                },
-                on_deselect_all: move |_| {
-                    selected_files.set(HashSet::new());
-                },
-                on_estimator_change: move |new_estimator| {
-                    estimator.set(new_estimator);
-                },
-                has_files: !files.read().is_empty(),
-                current_estimator: estimator.read().clone(),
-                selected_files: selected_files.clone(),
-            }
-
-            // Only show filter if we have files
-            if !files.read().is_empty() {
-                div {
-                    class: "px-4",
-                    FilterInput {
-                        filter_text: filter_text.clone(),
-                        filter_type: filter_type.clone(),
-                    }
-                }
-            }
-
-            FileList {
-                files: files.read().clone(),
-                selected_files: selected_files.clone(),
-                filter_text: Some(filter_text.clone()),
-                filter_type: Some(filter_type.clone()),
-                on_select_all: move |_| {
-                    let mut new_selection = HashSet::new();
-                    for file in files.read().iter() {
-                        new_selection.insert(file.path.clone());
-                    }
-                    selected_files.set(new_selection);
-                },
-                on_deselect_all: move |_| {
-                    selected_files.set(HashSet::new());
-                },
-            }
-
-            Footer {
-                files: files.read().clone(),
-                selected_files: selected_files.clone(),
-                current_estimator: estimator.read().clone(),
-            }
-
-            if show_progress {
-                ProgressModal {
-                    completed: progress_state.completed,
-                    total: progress_state.total,
-                    message: progress_state.message.clone(),
-                }
-            }
-        }
-    }
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(config)
+        .launch(app);
 }

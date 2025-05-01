@@ -10,6 +10,7 @@ edition = "2021"
 dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-desktop = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+muda = "0.11"
 
 # Debug
 rfd = "0.14"

@@ -9,7 +9,7 @@ const APP_NAME: &str = "context_loader";
 const SETTINGS_FILE: &str = "settings.json";
 const MAX_RECENT_WORKSPACES: usize = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     pub recent_workspaces: Vec<PathBuf>,
     pub token_estimator: TokenEstimator,
@@ -46,6 +46,10 @@ impl Settings {
         if self.recent_workspaces.len() > 5 {
             self.recent_workspaces.pop();
         }
+    }
+
+    pub fn clear_recent_workspaces(&mut self) {
+        self.recent_workspaces.clear();
     }
 
     pub fn set_token_estimator(&mut self, estimator: TokenEstimator) {
@@ -124,5 +128,31 @@ mod tests {
             loaded_settings.recent_workspaces[1],
             PathBuf::from("/path/to/workspace1")
         );
+    }
+
+    #[tokio::test]
+    async fn test_clear_recent_workspaces() {
+        let temp_dir = tempdir().unwrap();
+        let settings_file = temp_dir.path().join("settings.json");
+        let mut settings = Settings::new(settings_file.clone());
+
+        // Add some recent workspaces
+        settings.add_recent_workspace(PathBuf::from("/path/to/workspace1"));
+        settings.add_recent_workspace(PathBuf::from("/path/to/workspace2"));
+
+        // Clear recent workspaces
+        settings.clear_recent_workspaces();
+
+        // Verify workspaces are cleared
+        assert_eq!(settings.recent_workspaces.len(), 0);
+
+        // Save settings
+        settings.save().await.unwrap();
+
+        // Load settings
+        let loaded_settings = Settings::load(&settings_file).await.unwrap();
+
+        // Verify loaded settings are empty
+        assert_eq!(loaded_settings.recent_workspaces.len(), 0);
     }
 }
