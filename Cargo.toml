@@ -1,5 +1,5 @@
 [package]
-name = "rust-dioxus-ai-tool"
+name = "context-loader"
 version = "0.1.0"
 authors = ["Etienne Beaudry Auger <etienne@beaudry-auger.com>"]
 edition = "2021"
@@ -58,3 +58,10 @@ lto = true
 codegen-units = 1
 panic = 'abort'
 strip = true
+
+[package.metadata.bundle]
+name = "Context Loader"
+identifier = "com.example.contextloader" # Using a placeholder identifier
+
+[build-dependencies]
+tailwind-css = "0.1"

@@ -31,7 +31,7 @@ pub fn Toolbar(props: ToolbarProps) -> Element {
 
     let config_dir = dirs_next::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("rust-dioxus-ai-tool");
+        .join("context-loader");
     let settings_file = config_dir.join("settings.json");
     let mut settings = use_signal(|| Settings::new(settings_file));
     let mut copy_status = use_signal(|| None::<Result<(), String>>);

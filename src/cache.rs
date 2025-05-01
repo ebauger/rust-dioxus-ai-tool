@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -54,12 +55,8 @@ mod path_map_serde {
 
 impl TokenCache {
     pub async fn new(estimator: TokenEstimator) -> std::io::Result<Self> {
-        let cache_dir = dirs_next::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rust-dioxus-ai-tool");
-
-        fs::create_dir_all(&cache_dir).await?;
-        let cache_file = cache_dir.join("token_cache.json");
+        let dir = ensure_config_dir()?;
+        let cache_file = dir.join("token_cache.json");
 
         if let Ok(content) = fs::read_to_string(&cache_file).await {
             if let Ok(cache) = serde_json::from_str::<TokenCache>(&content) {
@@ -76,10 +73,8 @@ impl TokenCache {
     }
 
     pub async fn save(&self) -> std::io::Result<()> {
-        let cache_dir = dirs_next::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rust-dioxus-ai-tool");
-        let cache_file = cache_dir.join("token_cache.json");
+        let dir = ensure_config_dir()?;
+        let cache_file = dir.join("token_cache.json");
 
         let content = serde_json::to_string_pretty(self)?;
         fs::write(cache_file, content).await?;
@@ -97,6 +92,14 @@ impl TokenCache {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+}
+
+fn ensure_config_dir() -> io::Result<PathBuf> {
+    let path = dirs_next::config_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Config directory not found"))?
+        .join("context-loader");
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 #[cfg(test)]

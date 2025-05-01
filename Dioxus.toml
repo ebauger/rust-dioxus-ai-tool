@@ -47,4 +47,13 @@ binaryen = { wasm_opt = true }
 # Desktop Configuration
 [desktop]
 before_build = "npx tailwindcss -i ./input.css -o ./assets/tailwind.css"
+
+# After build hook seems non-functional for desktop, use ./fix_bundle_name.sh instead
 after_build = []
+
+[bundle]
+identifier = "com.contextloader"
+publisher = "Etienne Beaudry Auger"
+
+[macos]
+provider_short_name = "Context Loader"

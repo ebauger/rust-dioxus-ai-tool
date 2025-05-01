@@ -97,69 +97,72 @@ fn create_menu(settings: &Settings) -> (muda::Menu, MenuIds) {
     )
     .unwrap();
 
-    // Create main menu
-    let menu = muda::Menu::with_items(&[&file_submenu]).unwrap();
+    // Create main menu and control order per platform
+    let menu = muda::Menu::new();
 
-    // Platform specific menus
+    // macOS: App submenu first, then File, then Help
     #[cfg(target_os = "macos")]
     {
         let about_item = muda::PredefinedMenuItem::about(
-            None,
+            Some("Context Loader"),
             Some(muda::AboutMetadata {
-                name: Some("Rust Dioxus AI Tool".into()),
+                name: Some("Context Loader".into()),
                 ..Default::default()
             }),
         );
 
         let app_submenu = muda::Submenu::with_items(
-            "App",
+            "Context Loader",
             true,
             &[
                 &about_item,
                 &muda::PredefinedMenuItem::separator(),
                 &muda::PredefinedMenuItem::services(None),
                 &muda::PredefinedMenuItem::separator(),
-                &muda::PredefinedMenuItem::hide(None),
-                &muda::PredefinedMenuItem::hide_others(None),
-                &muda::PredefinedMenuItem::show_all(None),
+                &muda::PredefinedMenuItem::hide(Some("Hide Context Loader".into())),
+                &muda::PredefinedMenuItem::hide_others(Some("Hide Others".into())),
+                &muda::PredefinedMenuItem::show_all(Some("Show All".into())),
                 &muda::PredefinedMenuItem::separator(),
-                &muda::PredefinedMenuItem::quit(None),
+                &muda::PredefinedMenuItem::quit(Some("Quit Context Loader".into())),
             ],
         )
         .unwrap();
 
         menu.append(&app_submenu).unwrap();
+        menu.append(&file_submenu).unwrap();
     }
 
-    // Windows-specific menu initialization
+    // Windows: File first then Help
     #[cfg(target_os = "windows")]
     {
+        menu.append(&file_submenu).unwrap();
+
         let about_item = muda::PredefinedMenuItem::about(
-            None,
+            Some("Context Loader"),
             Some(muda::AboutMetadata {
-                name: Some("Rust Dioxus AI Tool".into()),
+                name: Some("Context Loader".into()),
                 ..Default::default()
             }),
         );
 
         let help_submenu = muda::Submenu::with_items("Help", true, &[&about_item]).unwrap();
-
         menu.append(&help_submenu).unwrap();
     }
 
-    // Linux-specific menu initialization
-    #[cfg(target_os = "linux")]
+    // Linux or other unix: File first then Help
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
+        menu.append(&file_submenu).unwrap();
+
         let about_item = muda::PredefinedMenuItem::about(
-            None,
+            Some("Context Loader"),
             Some(muda::AboutMetadata {
-                name: Some("Rust Dioxus AI Tool".into()),
+                name: Some("Context Loader".into()),
                 ..Default::default()
             }),
         );
 
         let help_submenu = muda::Submenu::with_items("Help", true, &[&about_item]).unwrap();
-
         menu.append(&help_submenu).unwrap();
     }
 
@@ -183,7 +186,7 @@ fn App() -> Element {
     let menu_ids = use_context::<MenuIds>();
     let settings_file = dirs_next::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("rust-dioxus-ai-tool")
+        .join("context-loader")
         .join("settings.json");
     let settings = Settings::new(settings_file);
     let mut settings = use_signal(|| settings);
@@ -354,7 +357,7 @@ fn App() -> Element {
                     class: "flex flex-col items-center justify-center h-full",
                     div {
                         class: "text-2xl font-bold mb-4",
-                        "Welcome to Rust Dioxus AI Tool"
+                        "Welcome to Context Loader"
                     }
                     div {
                         class: "text-lg text-gray-600",
@@ -370,7 +373,7 @@ fn main() {
     // Set up file logging
     let config_dir = dirs_next::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("rust-dioxus-ai-tool");
+        .join("context-loader");
 
     // Create config directory if it doesn't exist
     std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
@@ -397,7 +400,7 @@ fn main() {
 
     // Launch app with configuration
     let window = WindowBuilder::new()
-        .with_title("Rust Dioxus AI Tool")
+        .with_title("Context Loader")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .with_resizable(true);
 
