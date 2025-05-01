@@ -280,27 +280,29 @@ pub async fn concat_files(paths: &[PathBuf]) -> io::Result<String> {
     };
 
     for path in paths {
+        // Add separator newlines for subsequent files (before the header)
         if !first {
-            result.push_str("\n\n/* ---- ");
-
-            // Create a relative path from the common parent
-            let rel_path = path.strip_prefix(&common_parent).unwrap_or(path);
-
-            // Add "./" prefix for clarity if the path is relative
-            if !rel_path.has_root() && !rel_path.to_string_lossy().starts_with("./") {
-                result.push_str("./");
-            }
-
-            result.push_str(&rel_path.to_string_lossy());
-            result.push_str(" ---- */\n\n");
+            result.push_str("\n\n");
         }
-        first = false;
 
+        // Always add the header for the current file
+        result.push_str("/* ---- ");
+        let rel_path = path.strip_prefix(&common_parent).unwrap_or(path);
+        if !rel_path.has_root() && !rel_path.to_string_lossy().starts_with("./") {
+            result.push_str("./");
+        }
+        result.push_str(&rel_path.to_string_lossy());
+        result.push_str(" ---- */\n\n"); // Newlines after the header
+
+        // Always add the content
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut content = String::new();
         reader.read_to_string(&mut content)?;
         result.push_str(&content);
+
+        // Mark that we are no longer on the first file
+        first = false;
     }
 
     Ok(result)
@@ -441,6 +443,49 @@ mod tests {
             result.contains("/* ---- ./nested/file2.txt ---- */")
                 || result.contains("/* ---- nested/file2.txt ---- */"),
             "Output should contain relative path"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concat_files_headers() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Create test files
+        let file1_path = dir_path.join("file1.txt");
+        fs::write(&file1_path, "Content of file 1.").await.unwrap();
+
+        let file2_path = dir_path.join("file2.rs");
+        fs::write(&file2_path, "Content of file 2.").await.unwrap();
+
+        let file3_path = dir_path.join("file3.md");
+        fs::write(&file3_path, "Content of file 3.").await.unwrap();
+
+        let paths = vec![file1_path.clone(), file2_path.clone(), file3_path.clone()];
+        let result = concat_files(&paths).await.unwrap();
+
+        // Define expected parts
+        let expected_header_1 = "/* ---- ./file1.txt ---- */\n\n"; // Header for first file
+        let expected_content_1 = "Content of file 1.";
+        let expected_separator_2 = "\n\n/* ---- ./file2.rs ---- */\n\n"; // Separator + Header for second file
+        let expected_content_2 = "Content of file 2.";
+        let expected_separator_3 = "\n\n/* ---- ./file3.md ---- */\n\n"; // Separator + Header for third file
+        let expected_content_3 = "Content of file 3.";
+
+        // Check the exact sequence
+        let expected_sequence = format!(
+            "{}{}{}{}{}{}", // Added header 1
+            expected_header_1,
+            expected_content_1,
+            expected_separator_2,
+            expected_content_2,
+            expected_separator_3,
+            expected_content_3
+        );
+
+        assert_eq!(
+            result, expected_sequence,
+            "Concatenated string does not match expected sequence with headers for all files."
         );
     }
 }
