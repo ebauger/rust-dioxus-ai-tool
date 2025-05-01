@@ -286,13 +286,13 @@ pub async fn concat_files(paths: &[PathBuf]) -> io::Result<String> {
         }
 
         // Always add the header for the current file
-        result.push_str("/* ---- ");
+        result.push_str("@@@ "); // Use new marker
         let rel_path = path.strip_prefix(&common_parent).unwrap_or(path);
         if !rel_path.has_root() && !rel_path.to_string_lossy().starts_with("./") {
             result.push_str("./");
         }
         result.push_str(&rel_path.to_string_lossy());
-        result.push_str(" ---- */\n\n"); // Newlines after the header
+        result.push_str(" @@@\n\n"); // Use new marker and add newlines after
 
         // Always add the content
         let file = File::open(path)?;
@@ -434,14 +434,14 @@ mod tests {
 
         // Check for relative paths in the output
         assert!(
-            !result.contains(&format!("/* ---- {} ---- */", file2_path.display())),
+            !result.contains(&format!("@@@ {} @@@", file2_path.display())),
             "Output should not contain absolute paths"
         );
 
         // Should contain the relative path format
         assert!(
-            result.contains("/* ---- ./nested/file2.txt ---- */")
-                || result.contains("/* ---- nested/file2.txt ---- */"),
+            result.contains("@@@ ./nested/file2.txt @@@")
+                || result.contains("@@@ nested/file2.txt @@@"),
             "Output should contain relative path"
         );
     }
@@ -465,16 +465,16 @@ mod tests {
         let result = concat_files(&paths).await.unwrap();
 
         // Define expected parts
-        let expected_header_1 = "/* ---- ./file1.txt ---- */\n\n"; // Header for first file
+        let expected_header_1 = "@@@ ./file1.txt @@@\n\n"; // Header for first file
         let expected_content_1 = "Content of file 1.";
-        let expected_separator_2 = "\n\n/* ---- ./file2.rs ---- */\n\n"; // Separator + Header for second file
+        let expected_separator_2 = "\n\n@@@ ./file2.rs @@@\n\n"; // Separator + Header for second file
         let expected_content_2 = "Content of file 2.";
-        let expected_separator_3 = "\n\n/* ---- ./file3.md ---- */\n\n"; // Separator + Header for third file
+        let expected_separator_3 = "\n\n@@@ ./file3.md @@@\n\n"; // Separator + Header for third file
         let expected_content_3 = "Content of file 3.";
 
         // Check the exact sequence
         let expected_sequence = format!(
-            "{}{}{}{}{}{}", // Added header 1
+            "{}{}{}{}{}{}",
             expected_header_1,
             expected_content_1,
             expected_separator_2,
@@ -485,7 +485,7 @@ mod tests {
 
         assert_eq!(
             result, expected_sequence,
-            "Concatenated string does not match expected sequence with headers for all files."
+            "Concatenated string does not match expected sequence with @@@ headers."
         );
     }
 }
