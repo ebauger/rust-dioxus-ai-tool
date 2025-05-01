@@ -15,8 +15,10 @@ mod fs_utils;
 mod settings;
 mod tokenizer;
 
-use components::Toolbar;
+use components::{FileList, Footer, Toolbar};
+use fs_utils::FileInfo;
 use settings::Settings;
+use tokenizer::TokenEstimator;
 
 // Define constant for max recent workspaces
 const MAX_RECENTS: usize = 5;
@@ -174,20 +176,69 @@ fn create_menu(settings: &Settings) -> (muda::Menu, MenuIds) {
 #[derive(Props, Clone, PartialEq)]
 struct AppProps {
     menu_ids: MenuIds,
-    settings: Settings,
 }
 
-fn app() -> Element {
+#[component]
+fn App() -> Element {
+    let menu_ids = use_context::<MenuIds>();
     let settings_file = dirs_next::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rust-dioxus-ai-tool")
         .join("settings.json");
     let settings = Settings::new(settings_file);
-    let (_menu, menu_ids) = create_menu(&settings);
+    let mut settings = use_signal(|| settings);
+    let mut current_workspace = use_signal(|| None::<PathBuf>);
+    let mut selected_files = use_signal(|| HashSet::new());
+    let mut files = use_signal(|| Vec::<FileInfo>::new());
 
-    let settings = use_signal(|| settings);
-    let current_workspace = use_signal(|| None::<PathBuf>);
-    let selected_files = use_signal(|| HashSet::new());
+    // Load file list (without tokens) when workspace changes
+    use_effect(move || {
+        if let Some(path) = current_workspace.read().clone() {
+            let mut files_signal = files.clone();
+            spawn(async move {
+                match fs_utils::list_files(&path).await {
+                    Ok(list) => files_signal.set(list),
+                    Err(e) => log::error!("Failed to list workspace files: {}", e),
+                }
+            });
+        } else {
+            files.set(Vec::new());
+        }
+    });
+
+    // Lazily compute token counts only for selected files
+    use_effect(move || {
+        let selected = selected_files.read().clone();
+        if selected.is_empty() {
+            return;
+        }
+
+        let mut files_signal = files.clone();
+        let estimator = settings.read().get_token_estimator();
+
+        spawn(async move {
+            let mut list = files_signal.read().clone();
+            let mut updated = false;
+            for file in &mut list {
+                if selected.contains(&file.path) && file.token_count == 0 {
+                    match estimator.estimate_file_tokens(&file.path) {
+                        Ok(tokens) => {
+                            file.token_count = tokens;
+                            updated = true;
+                        }
+                        Err(e) => log::error!(
+                            "Failed to estimate tokens for {}: {}",
+                            file.path.display(),
+                            e
+                        ),
+                    }
+                }
+            }
+            if updated {
+                files_signal.set(list);
+            }
+        });
+    });
 
     // Handle menu events
     use_muda_event_handler(move |event| {
@@ -243,27 +294,60 @@ fn app() -> Element {
         div {
             class: "flex flex-col h-screen",
             if let Some(_) = current_workspace.read().as_ref() {
-                Toolbar {
-                    has_files: true,
-                    on_select_all: move |_| {
-                        // TODO: Implement select all
-                    },
-                    on_deselect_all: move |_| {
-                        // TODO: Implement deselect all
-                    },
-                    on_estimator_change: move |estimator| {
-                        let mut settings = settings.clone();
-                        spawn(async move {
-                            let mut current_settings = settings.read().clone();
-                            current_settings.set_token_estimator(estimator);
-                            if let Err(e) = current_settings.save().await {
-                                log::error!("Failed to save settings: {}", e);
-                            }
-                            settings.set(current_settings);
-                        });
-                    },
-                    current_estimator: settings.read().get_token_estimator(),
-                    selected_files: selected_files.clone(),
+                div {
+                    class: "flex flex-col flex-1 overflow-hidden", // take remaining height
+                    Toolbar {
+                        has_files: !files.read().is_empty(),
+                        on_select_all: move |_| {
+                            let all_paths: HashSet<PathBuf> = files.read().iter().map(|f| f.path.clone()).collect();
+                            selected_files.set(all_paths);
+                        },
+                        on_deselect_all: move |_| {
+                            selected_files.set(HashSet::new());
+                        },
+                        on_estimator_change: move |estimator: TokenEstimator| {
+                            let mut settings = settings.clone();
+                            let current_workspace = current_workspace.read().clone();
+                            let mut files_signal = files.clone();
+                            spawn(async move {
+                                let mut current_settings = settings.read().clone();
+                                current_settings.set_token_estimator(estimator.clone());
+                                if let Err(e) = current_settings.save().await {
+                                    log::error!("Failed to save settings: {}", e);
+                                }
+                                settings.set(current_settings);
+                                // Recompute tokens with new estimator
+                                if let Some(path) = current_workspace {
+                                    match fs_utils::crawl(&path, &estimator, None).await {
+                                        Ok(list) => files_signal.set(list),
+                                        Err(e) => log::error!("Failed to crawl workspace: {}", e),
+                                    }
+                                }
+                            });
+                        },
+                        current_estimator: settings.read().get_token_estimator(),
+                        selected_files: selected_files.clone(),
+                    }
+                    // File list scrollable area
+                    div {
+                        class: "flex-1 overflow-auto p-4",
+                        FileList {
+                            files: files.read().clone(),
+                            selected_files: selected_files.clone(),
+                            on_select_all: move |_| {
+                                let all_paths: HashSet<PathBuf> = files.read().iter().map(|f| f.path.clone()).collect();
+                                selected_files.set(all_paths);
+                            },
+                            on_deselect_all: move |_| {
+                                selected_files.set(HashSet::new());
+                            },
+                        }
+                    }
+                    Footer {
+                        files: files.read().clone(),
+                        selected_files: selected_files.clone(),
+                        current_estimator: settings.read().get_token_estimator(),
+                    }
                 }
             } else {
                 div {
@@ -306,6 +390,11 @@ fn main() {
         )
         .init();
 
+    // Load settings and create menu
+    let settings_file = config_dir.join("settings.json");
+    let settings = Settings::new(settings_file);
+    let (menu, menu_ids) = create_menu(&settings);
+
     // Launch app with configuration
     let window = WindowBuilder::new()
         .with_title("Rust Dioxus AI Tool")
@@ -314,6 +403,7 @@ fn main() {
 
     let config = Config::default()
         .with_window(window)
+        .with_menu(Some(menu))
         .with_custom_head(format!(
             r#"<link rel="stylesheet" href="/{}"/>"#,
             asset!("/assets/main.css")
@@ -321,5 +411,6 @@ fn main() {
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
-        .launch(app);
+        .with_context(menu_ids)
+        .launch(App);
 }
