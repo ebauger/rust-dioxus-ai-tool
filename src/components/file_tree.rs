@@ -246,6 +246,12 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
 
     let window = use_window();
 
+    // Clone necessary props for the oninput closure
+    let current_node_path = props.node.path.clone();
+    let current_node_type = props.node.node_type.clone();
+    let current_node_children = props.node.children.clone(); // Clone children for folder logic
+    let mut selected_paths_signal = props.selected_paths; // Get the signal itself
+
     use_effect(move || {
         let state = *selection_state_for_effect.read();
         let js_command = match state {
@@ -283,7 +289,49 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
                 id: "{unique_checkbox_id}",
                 checked: *props.node.selection_state.read() == NodeSelectionState::Selected,
                 oninput: move |event| {
-                    log::info!("Checkbox input event: {:?}", event.value());
+                    let is_checked = event.value().parse::<bool>().unwrap_or(false);
+                    let mut current_selected = selected_paths_signal.write();
+
+                    fn toggle_descendants(
+                        node_children: &[FileTreeNode],
+                        selected_paths_writer: &mut Write<'_, HashSet<PathBuf>>,
+                        should_select: bool
+                    ) {
+                        for child in node_children {
+                            if child.node_type == TreeNodeType::File {
+                                if should_select {
+                                    selected_paths_writer.insert(child.path.clone());
+                                } else {
+                                    selected_paths_writer.remove(&child.path);
+                                }
+                            }
+                            if !child.children.is_empty() {
+                                toggle_descendants(&child.children, selected_paths_writer, should_select);
+                            }
+                        }
+                    }
+
+                    match current_node_type {
+                        TreeNodeType::File => {
+                            if is_checked {
+                                current_selected.insert(current_node_path.clone());
+                            } else {
+                                current_selected.remove(&current_node_path);
+                            }
+                        }
+                        TreeNodeType::Folder => {
+                            // For a folder, select/deselect itself (if it's a selectable entity, TBD)
+                            // and all its descendants.
+                            // Current task: affect descendants based on folder click.
+                            // For now, treat folder click as intent for all its direct and indirect children files.
+                            toggle_descendants(&current_node_children, &mut current_selected, is_checked);
+
+                            // Also toggle the folder itself if it should be part of selected_paths
+                            // This depends on whether folders themselves are considered "selected items"
+                            // or just containers. For now, let's assume folders are not added to selected_paths directly,
+                            // their state is derived. But if a folder is explicitly clicked, its files are affected.
+                        }
+                    }
                 }
             }
             span {
