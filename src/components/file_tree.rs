@@ -16,43 +16,42 @@ pub enum NodeSelectionState {
     PartiallySelected,
 }
 
-#[derive(PartialEq, Clone)]
-pub struct FileTreeNode {
+// This is the blueprint struct with plain data, returned by build_tree_from_file_info
+#[derive(PartialEq, Clone, Debug)] // Added Debug
+pub struct FileTreeNodeBlueprint {
     pub id: usize,
     pub name: String,
     pub path: PathBuf,
     pub node_type: TreeNodeType,
-    pub children: Vec<FileTreeNode>,
+    pub children: Vec<FileTreeNodeBlueprint>, // Children are also blueprints
     pub is_expanded: bool,
     pub selection_state: NodeSelectionState,
     pub depth: usize,
 }
 
-// Required for Signal to work with FileTreeNode if it's used in a Signal directly.
-// However, children is Vec<FileTreeNode>, not Signal<Vec<FileTreeNode>>.
-// And the FileTreeNode itself is not directly in a signal in the requirements,
-// rather its fields `is_expanded` and `selection_state` are signals.
-// If we were to have `Signal<FileTreeNode>`, then `FileTreeNode` would need `impl PartialEq for FileTreeNode`.
-// The derive(PartialEq) above should be sufficient for now. If comparing signals of FileTreeNode becomes necessary,
-// we'd need to ensure the PartialEq impl is correct for Dioxus's reactivity.
-// For now, deriving PartialEq is fine.
-// Note: Dioxus signals typically require the contained type to be 'static + Clone + PartialEq.
-// PathBuf is Clone but not Copy. String is Clone but not Copy. Vec is Clone but not Copy.
-// Signal<bool> and Signal<NodeSelectionState> are fine.
-// The struct FileTreeNode itself being stored in a list or as a field seems fine.
-// If we were to put `Signal<Vec<FileTreeNode>>`, that would require `FileTreeNode: Clone + PartialEq`.
-// The current `children: Vec<FileTreeNode>` is fine.
+// This is the struct used for display, containing Dioxus Signals
+#[derive(PartialEq, Clone)] // Required by Dioxus for props if FileTreeNode is a prop, and for Signal<Vec<FileTreeNode>>
+pub struct FileTreeNode {
+    pub id: usize,
+    pub name: String,
+    pub path: PathBuf,
+    pub node_type: TreeNodeType,
+    pub children: Vec<FileTreeNode>, // Children are also this signal-containing type
+    pub is_expanded: Signal<bool>,
+    pub selection_state: Signal<NodeSelectionState>,
+    pub depth: usize,
+}
 
-// Helper to find or create a node in a list of children
-fn find_or_create_node<'a>(
-    children: &'a mut Vec<FileTreeNode>,
+// Helper to find or create a blueprint node in a list of children blueprints
+fn find_or_create_blueprint_node<'a>(
+    children: &'a mut Vec<FileTreeNodeBlueprint>,
     name: &str,
     full_path: &PathBuf,
     node_type: TreeNodeType,
     current_id_counter: &mut usize,
     depth: usize,
-    is_root_folder: bool, // To expand root folders by default
-) -> &'a mut FileTreeNode {
+    is_root_folder: bool,
+) -> &'a mut FileTreeNodeBlueprint {
     if let Some(pos) = children
         .iter()
         .position(|c| c.name == name && c.node_type == node_type)
@@ -61,14 +60,14 @@ fn find_or_create_node<'a>(
     } else {
         let id = *current_id_counter;
         *current_id_counter += 1;
-        let new_node = FileTreeNode {
+        let new_node = FileTreeNodeBlueprint {
             id,
             name: name.to_string(),
             path: full_path.clone(),
             node_type,
             children: Vec::new(),
-            is_expanded: if depth == 0 { true } else { is_root_folder }, // plain bool
-            selection_state: NodeSelectionState::NotSelected,            // plain enum
+            is_expanded: if depth == 0 { true } else { is_root_folder },
+            selection_state: NodeSelectionState::NotSelected,
             depth,
         };
         children.push(new_node);
@@ -79,23 +78,16 @@ fn find_or_create_node<'a>(
 pub fn build_tree_from_file_info(
     files: &[FileInfo],
     selected_paths: &HashSet<PathBuf>,
-    // TODO: Consider adding a 'current_workspace_root: &Path' parameter
-    // if paths in FileInfo are absolute and we need to determine the 'root'
-    // of the tree structure shown to the user. For now, assuming paths are relative
-    // or the structure naturally forms from common prefixes.
-) -> Vec<FileTreeNode> {
+) -> Vec<FileTreeNodeBlueprint> {
+    // Returns blueprint
     if files.is_empty() {
         return Vec::new();
     }
 
-    // Sort files by path to process them in a somewhat predictable order,
-    // which helps in constructing the tree layer by layer.
     let mut sorted_files = files.to_vec();
     sorted_files.sort_by_key(|f| f.path.clone());
 
-    // Revised loop structure using find_or_create_node more directly:
-    let mut final_roots: Vec<FileTreeNode> = Vec::new();
-    // let mut node_map: HashMap<PathBuf, usize> = HashMap::new(); // Not used for now
+    let mut final_roots: Vec<FileTreeNodeBlueprint> = Vec::new();
     let mut unique_id_counter = 0;
 
     for file_info in &sorted_files {
@@ -115,7 +107,6 @@ pub fn build_tree_from_file_info(
 
             if is_last_component {
                 // It's a file
-                // Ensure file is not duplicated if path appears multiple times (though FileInfo should be unique by path)
                 if !current_parent_children_list
                     .iter()
                     .any(|n| n.path == *path && n.node_type == TreeNodeType::File)
@@ -127,14 +118,15 @@ pub fn build_tree_from_file_info(
                     } else {
                         NodeSelectionState::NotSelected
                     };
-                    let file_node = FileTreeNode {
+                    let file_node = FileTreeNodeBlueprint {
+                        // Create blueprint
                         id,
                         name: file_info.name.clone(),
                         path: path.clone(),
                         node_type: TreeNodeType::File,
                         children: Vec::new(),
-                        is_expanded: false,         // plain bool
-                        selection_state: selection, // plain enum
+                        is_expanded: false,
+                        selection_state: selection,
                         depth: idx,
                     };
                     current_parent_children_list.push(file_node);
@@ -142,21 +134,42 @@ pub fn build_tree_from_file_info(
             } else {
                 // It's a folder
                 let folder_path_clone = current_accumulated_path.clone();
-                let folder_node = find_or_create_node(
+                let folder_node = find_or_create_blueprint_node(
+                    // Use blueprint helper
                     current_parent_children_list,
                     &component_name,
                     &folder_path_clone,
                     TreeNodeType::Folder,
                     &mut unique_id_counter,
                     idx,
-                    idx == 0, // Only expand true top-level folders
+                    idx == 0,
                 );
                 current_parent_children_list = &mut folder_node.children;
             }
         }
     }
-
     final_roots
+}
+
+// Recursive function to convert blueprints to signal-based FileTreeNodes
+// This must be called within a Dioxus component/hook context for Signal::new to work.
+fn convert_blueprint_to_file_tree_node_recursive(blueprint: FileTreeNodeBlueprint) -> FileTreeNode {
+    let children: Vec<FileTreeNode> = blueprint
+        .children
+        .into_iter()
+        .map(convert_blueprint_to_file_tree_node_recursive)
+        .collect();
+
+    FileTreeNode {
+        id: blueprint.id,
+        name: blueprint.name,
+        path: blueprint.path,
+        node_type: blueprint.node_type,
+        children,
+        is_expanded: Signal::new(blueprint.is_expanded),
+        selection_state: Signal::new(blueprint.selection_state),
+        depth: blueprint.depth,
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -169,40 +182,94 @@ pub struct FileTreeProps {
 
 #[allow(non_snake_case)]
 pub fn FileTree(props: FileTreeProps) -> Element {
-    let mut tree_nodes = use_signal(Vec::new);
+    let mut tree_display_nodes = use_signal(Vec::new);
 
     use_effect(move || {
-        // This effect runs when props.all_files changes (component re-renders)
-        // or when props.selected_paths signal changes.
-        let new_tree = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
-        tree_nodes.set(new_tree);
+        let blueprints = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
+
+        let new_display_nodes: Vec<FileTreeNode> = blueprints
+            .into_iter()
+            .map(convert_blueprint_to_file_tree_node_recursive)
+            .collect();
+
+        tree_display_nodes.set(new_display_nodes);
     });
 
     rsx! {
         div {
             class: "file-tree-container",
-            // TODO: Add Select All / Deselect All buttons here later, using props.on_select_all and props.on_deselect_all
+            // TODO: Add Select All / Deselect All buttons here later
             ul {
-                class: "file-tree-list",
-                for node in tree_nodes.read().iter() {
-                    li {
-                        key: "{node.id}", // Unique key for Dioxus list rendering
-                        // Basic rendering: checkbox, name, type
-                        input {
-                            r#type: "checkbox",
-                            checked: node.selection_state == NodeSelectionState::Selected, // Direct access
-                        }
-                        span {
-                            " {node.name} "
-                        }
-                        span {
-                            match node.node_type {
-                                TreeNodeType::File => "(File)",
-                                TreeNodeType::Folder => "(Folder)",
-                            }
-                        }
-                        // Recursive rendering will be handled in Story 4
+                class: "file-tree-list p-0 m-0 list-none", // Added some basic list reset
+                for node in tree_display_nodes.read().iter() {
+                    FileTreeNodeDisplay {
+                        key: "{node.id}", // Use node.id for the key directly
+                        node: node.clone(), // Pass the FileTreeNode (signal-containing)
+                        selected_paths: props.selected_paths,
                     }
+                }
+            }
+        }
+    }
+}
+
+// Story 4: Implement Recursive Rendering of Tree Nodes
+// Task 4.1: Define FileTreeNodeDisplay component
+#[derive(Props, Clone, PartialEq)]
+pub struct FileTreeNodeDisplayProps {
+    // node is the signal-containing FileTreeNode, not a Signal wrapping it.
+    pub node: FileTreeNode,
+    pub selected_paths: Signal<HashSet<PathBuf>>,
+    // Add on_toggle_expanded: EventHandler<usize> later if needed for callbacks
+    // Add on_toggle_selection: EventHandler<PathBuf> later
+}
+
+#[allow(non_snake_case)]
+pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
+    let node = &props.node; // props.node is already the FileTreeNode struct
+
+    // Task 4.2: Render checkbox, icon, name
+    let icon = match node.node_type {
+        TreeNodeType::File => "📄",
+        TreeNodeType::Folder => {
+            if *node.is_expanded.read() {
+                "📂"
+            } else {
+                "📁"
+            }
+        }
+    };
+
+    // Task 4.3: Apply indentation
+    let indent_style = format!("padding-left: {}px;", node.depth * 20);
+
+    rsx! {
+        div { // Each node is a div for easier styling and click handling
+            style: "{indent_style}",
+            class: "file-tree-node-row", // Add a class for potential row hover/styling
+
+            // Checkbox (will be more interactive later)
+            input {
+                r#type: "checkbox",
+                checked: *node.selection_state.read() == NodeSelectionState::Selected,
+                // indeterminate: *node.selection_state.read() == NodeSelectionState::PartiallySelected, (Story 6)
+                // oninput event handler (Story 7)
+            }
+
+            // Icon and Name (clickable for folders for expansion)
+            span {
+                // onclick for folder expansion/collapse (Story 5)
+                // For now, just display
+                "{icon} {node.name}"
+            }
+        }
+
+        // Task 4.4: Recursive rendering for children if folder and expanded
+        if node.node_type == TreeNodeType::Folder && *node.is_expanded.read() {
+            for child_node in node.children.iter() {
+                FileTreeNodeDisplay {
+                    node: child_node.clone(), // Pass child FileTreeNode (already signal-containing)
+                    selected_paths: props.selected_paths,
                 }
             }
         }

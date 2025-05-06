@@ -1,6 +1,6 @@
 #![cfg(test)]
 use crate::components::file_tree::{
-    build_tree_from_file_info, FileTreeNode, NodeSelectionState, TreeNodeType,
+    build_tree_from_file_info, FileTreeNodeBlueprint, NodeSelectionState, TreeNodeType,
 };
 use crate::fs_utils::FileInfo;
 use std::collections::HashSet;
@@ -350,7 +350,7 @@ fn test_build_tree_id_uniqueness_and_order() {
 }
 
 // Helper to collect all node IDs from a tree for uniqueness checks
-fn collect_ids(nodes: &[FileTreeNode], ids: &mut Vec<usize>) {
+fn collect_ids(nodes: &[FileTreeNodeBlueprint], ids: &mut Vec<usize>) {
     for node in nodes {
         ids.push(node.id);
         collect_ids(&node.children, ids);
@@ -358,7 +358,10 @@ fn collect_ids(nodes: &[FileTreeNode], ids: &mut Vec<usize>) {
 }
 
 // Helper to collect names and depths for structure checks
-fn collect_names_and_depths(nodes: &[FileTreeNode], names_depths: &mut Vec<(String, usize)>) {
+fn collect_names_and_depths(
+    nodes: &[FileTreeNodeBlueprint],
+    names_depths: &mut Vec<(String, usize)>,
+) {
     for node in nodes {
         names_depths.push((node.name.clone(), node.depth));
         collect_names_and_depths(&node.children, names_depths);
