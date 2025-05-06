@@ -196,6 +196,76 @@ fn convert_blueprint_to_file_tree_node_recursive(blueprint: FileTreeNodeBlueprin
     }
 }
 
+// --- Start of Story 8 Implementation ---
+
+// Task 8.1: Helper function to calculate a folder's selection state based on its children.
+fn calculate_folder_selection_state(folder_node: &FileTreeNode) -> NodeSelectionState {
+    if folder_node.node_type == TreeNodeType::File {
+        // This function is intended for folders. If called on a file,
+        // it should ideally not happen, but return its own state as a fallback.
+        return *folder_node.selection_state.read();
+    }
+
+    if folder_node.children.is_empty() {
+        // An empty folder has no selected children, so it's NotSelected.
+        return NodeSelectionState::NotSelected;
+    }
+
+    let mut all_children_selected = true;
+    let mut any_child_selected = false;
+    let mut any_child_partially_selected = false;
+
+    for child in &folder_node.children {
+        let child_state = *child.selection_state.read();
+        match child_state {
+            NodeSelectionState::Selected => {
+                any_child_selected = true;
+                // If even one child is not fully selected, the parent cannot be fully selected.
+            }
+            NodeSelectionState::NotSelected => {
+                all_children_selected = false;
+            }
+            NodeSelectionState::PartiallySelected => {
+                all_children_selected = false;
+                any_child_partially_selected = true;
+            }
+        }
+    }
+
+    if all_children_selected {
+        NodeSelectionState::Selected
+    } else if any_child_selected || any_child_partially_selected {
+        NodeSelectionState::PartiallySelected
+    } else {
+        NodeSelectionState::NotSelected
+    }
+}
+
+// Task 8.2 (Helper): Recursively update folder selection states from bottom up.
+fn update_folder_selection_states_recursive(nodes: &[FileTreeNode]) {
+    for node in nodes {
+        if node.node_type == TreeNodeType::Folder {
+            // First, ensure all children (and their descendants) are up-to-date.
+            // This makes it a bottom-up update for the current node.
+            if !node.children.is_empty() {
+                update_folder_selection_states_recursive(&node.children);
+            }
+
+            // Now calculate this folder's state based on its (now updated) children.
+            let new_calculated_state = calculate_folder_selection_state(node);
+
+            // Only update the signal if the state has actually changed.
+            // Signal::set takes &mut self, so the signal variable needs to be mutable.
+            let mut selection_signal = node.selection_state;
+            if *selection_signal.read() != new_calculated_state {
+                selection_signal.set(new_calculated_state);
+            }
+        }
+    }
+}
+
+// --- End of Story 8 Implementation ---
+
 #[derive(Props, Clone, PartialEq)]
 pub struct FileTreeProps {
     pub all_files: Vec<FileInfo>,
@@ -215,6 +285,10 @@ pub fn FileTree(props: FileTreeProps) -> Element {
             .into_iter()
             .map(convert_blueprint_to_file_tree_node_recursive)
             .collect();
+
+        // Task 8.2: Update folder selection states after tree construction.
+        // This ensures parent folders correctly reflect their children's states.
+        update_folder_selection_states_recursive(&new_display_nodes);
 
         tree_display_nodes.set(new_display_nodes);
     });
