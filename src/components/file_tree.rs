@@ -278,7 +278,16 @@ pub struct FileTreeProps {
 pub fn FileTree(props: FileTreeProps) -> Element {
     let mut tree_display_nodes = use_signal(Vec::new);
 
+    // The use_effect captures and moves `props.all_files` and `props.selected_paths`.
+    // To use them in other closures (like button onclicks), we need to handle ownership.
+    // `props.selected_paths` is a Signal, which is Copy, so it can be copied before being moved.
+    // `props.all_files` is a Vec, not Copy, so it must be cloned if used after a move or by multiple move closures.
+
+    let all_files_clone_for_buttons = props.all_files.clone(); // Clone for the button
+    let selected_paths_for_buttons = props.selected_paths; // Signal is Copy
+
     use_effect(move || {
+        // props.all_files and props.selected_paths are moved into this closure
         let blueprints = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
 
         let new_display_nodes: Vec<FileTreeNode> = blueprints
@@ -286,8 +295,6 @@ pub fn FileTree(props: FileTreeProps) -> Element {
             .map(convert_blueprint_to_file_tree_node_recursive)
             .collect();
 
-        // Task 8.2: Update folder selection states after tree construction.
-        // This ensures parent folders correctly reflect their children's states.
         update_folder_selection_states_recursive(&new_display_nodes);
 
         tree_display_nodes.set(new_display_nodes);
@@ -296,14 +303,40 @@ pub fn FileTree(props: FileTreeProps) -> Element {
     rsx! {
         div {
             class: "file-tree-container",
-            // TODO: Add Select All / Deselect All buttons here later
+            div {
+                class: "file-tree-controls p-2 flex space-x-2",
+                button {
+                    class: "px-3 py-1 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:bg-blue-500 dark:hover:bg-blue-600 dark:focus:ring-offset-gray-800",
+                    onclick: move |_| {
+                        let mut all_file_paths_hs = HashSet::new();
+                        // Use the cloned all_files specific to this button
+                        for file_info in &all_files_clone_for_buttons { // Use the clone
+                            all_file_paths_hs.insert(file_info.path.clone());
+                        }
+                        // Signal is Copy, get a mutable copy for set()
+                        let mut sp = selected_paths_for_buttons; // Use the copied signal
+                        sp.set(all_file_paths_hs);
+                    },
+                    "Select All"
+                }
+                button {
+                    class: "px-3 py-1 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400 dark:text-gray-200 dark:bg-gray-600 dark:hover:bg-gray-500 dark:focus:ring-offset-gray-800",
+                    onclick: move |_| {
+                        // Signal is Copy, get a mutable copy for set()
+                        let mut sp = selected_paths_for_buttons; // Use the copied signal
+                        sp.set(HashSet::new());
+                    },
+                    "Deselect All"
+                }
+            }
             ul {
-                class: "file-tree-list p-0 m-0 list-none", // Added some basic list reset
+                class: "file-tree-list p-0 m-0 list-none",
                 for node in tree_display_nodes.read().iter() {
                     FileTreeNodeDisplay {
-                        key: "{node.id}", // Use node.id for the key directly
-                        node: node.clone(), // Pass the FileTreeNode (signal-containing)
-                        selected_paths: props.selected_paths,
+                        key: "{node.id}",
+                        node: node.clone(),
+                        selected_paths: selected_paths_for_buttons, // Pass the copied signal to children if they also modify it, or original props.selected_paths
+                                                                  // For now, FileTreeNodeDisplay takes Signal<HashSet<PathBuf>>, so selected_paths_for_buttons is fine.
                     }
                 }
             }
