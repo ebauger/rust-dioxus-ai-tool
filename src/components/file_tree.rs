@@ -1,5 +1,7 @@
 use crate::fs_utils::FileInfo;
 use dioxus::prelude::*;
+use dioxus_desktop::use_window;
+use log;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -217,18 +219,12 @@ pub fn FileTree(props: FileTreeProps) -> Element {
 // Task 4.1: Define FileTreeNodeDisplay component
 #[derive(Props, Clone, PartialEq)]
 pub struct FileTreeNodeDisplayProps {
-    // node is the signal-containing FileTreeNode, not a Signal wrapping it.
     pub node: FileTreeNode,
     pub selected_paths: Signal<HashSet<PathBuf>>,
-    // Add on_toggle_expanded: EventHandler<usize> later if needed for callbacks
-    // Add on_toggle_selection: EventHandler<PathBuf> later
 }
 
 #[allow(non_snake_case)]
 pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
-    // let node = props.node.clone(); // This clone is unused, props.node is used directly.
-
-    // Task 4.2: Render checkbox, icon, name
     let icon = match props.node.node_type {
         TreeNodeType::File => "📄",
         TreeNodeType::Folder => {
@@ -239,36 +235,67 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
             }
         }
     };
-
-    // Task 4.3: Apply indentation
     let indent_style = format!("padding-left: {}px;", props.node.depth * 20);
+    let mut is_expanded_signal = props.node.is_expanded;
+    let node_type = props.node.node_type.clone();
 
-    // Task 5.1 & 5.2: onclick handler for folder expansion/collapse
-    let mut is_expanded_signal = props.node.is_expanded; // Get the signal to modify
-    let node_type = props.node.node_type.clone(); // Clone for the closure
+    let unique_checkbox_id = format!("ftn-checkbox-{}", props.node.id);
+
+    let selection_state_for_effect = props.node.selection_state;
+    let unique_checkbox_id_for_effect = unique_checkbox_id.clone();
+
+    let window = use_window();
+
+    use_effect(move || {
+        let state = *selection_state_for_effect.read();
+        let js_command = match state {
+            NodeSelectionState::PartiallySelected => {
+                format!(
+                    "document.getElementById('{}').indeterminate = true;",
+                    unique_checkbox_id_for_effect
+                )
+            }
+            _ => {
+                format!(
+                    "document.getElementById('{}').indeterminate = false;",
+                    unique_checkbox_id_for_effect
+                )
+            }
+        };
+        let full_js = format!("try {{ {} }} catch(e) {{ console.error('Failed to set indeterminate for {}: ', e, '{}'); }}", js_command, unique_checkbox_id_for_effect, js_command);
+
+        if let Err(e) = window.webview.evaluate_script(&full_js) {
+            log::error!(
+                "Failed to evaluate script for indeterminate checkbox {}: {:?}",
+                unique_checkbox_id_for_effect,
+                e
+            );
+        }
+    });
 
     rsx! {
-        div { // Each node is a div for easier styling and click handling
+        div {
             style: "{indent_style}",
-            class: "file-tree-node-row flex items-center", // Added flex and items-center
-
+            class: "file-tree-node-row flex items-center",
             input {
                 r#type: "checkbox",
-                class: "mr-1", // Added margin
+                class: "mr-1",
+                id: "{unique_checkbox_id}",
                 checked: *props.node.selection_state.read() == NodeSelectionState::Selected,
+                oninput: move |event| {
+                    log::info!("Checkbox input event: {:?}", event.value());
+                }
             }
-
             span {
-                class: "cursor-pointer", // Make it look clickable
+                class: "cursor-pointer",
                 onclick: move |_| {
-                    if node_type == TreeNodeType::Folder { // Task 5.3: Only for folders
-                        is_expanded_signal.toggle(); // Corrected: Call toggle directly on the Signal
+                    if node_type == TreeNodeType::Folder {
+                        is_expanded_signal.toggle();
                     }
                 },
                 "{icon} {props.node.name}"
             }
         }
-
         if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
             for child_node in props.node.children.iter() {
                 FileTreeNodeDisplay {
