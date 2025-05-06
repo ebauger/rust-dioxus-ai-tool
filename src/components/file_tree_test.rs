@@ -3,6 +3,9 @@ use crate::components::file_tree::{
     build_tree_from_file_info, FileTreeNodeBlueprint, NodeSelectionState, TreeNodeType,
 };
 use crate::fs_utils::FileInfo;
+use dioxus::prelude::*;
+use dioxus_core;
+use dioxus_core::ScopeId;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -364,6 +367,611 @@ fn collect_names_and_depths(
 ) {
     for node in nodes {
         names_depths.push((node.name.clone(), node.depth));
-        collect_names_and_depths(&node.children, names_depths);
+        if !node.children.is_empty() {
+            collect_names_and_depths(&node.children, names_depths);
+        }
+    }
+}
+
+// --- Tests for Story 10 ---
+#[cfg(test)]
+mod story_10_tests {
+    use dioxus::prelude::*;
+    use std::{collections::HashSet, path::PathBuf};
+
+    use crate::components::file_tree::{
+        build_tree_from_file_info, calculate_folder_selection_state,
+        convert_blueprint_to_file_tree_node_recursive, update_folder_selection_states_recursive,
+        FileTreeNode, NodeSelectionState, TreeNodeType,
+    };
+    use crate::fs_utils::FileInfo;
+
+    // Helper to create a FileTreeNode (File type) for testing
+    fn create_test_file_node(
+        scope_id: ScopeId,
+        id: usize,
+        name: &str,
+        path_str: &str,
+        selection_state: NodeSelectionState,
+        depth: usize,
+    ) -> FileTreeNode {
+        FileTreeNode {
+            id,
+            name: name.to_string(),
+            path: PathBuf::from(path_str),
+            node_type: TreeNodeType::File,
+            children: Vec::new(),
+            is_expanded: Signal::new_in_scope(false, scope_id),
+            selection_state: Signal::new_in_scope(selection_state, scope_id),
+            depth,
+        }
+    }
+
+    // Helper to create a FileTreeNode (Folder type) for testing
+    fn create_test_folder_node(
+        scope_id: ScopeId,
+        id: usize,
+        name: &str,
+        path_str: &str,
+        children: Vec<FileTreeNode>,
+        is_expanded: bool,
+        selection_state: NodeSelectionState,
+        depth: usize,
+    ) -> FileTreeNode {
+        FileTreeNode {
+            id,
+            name: name.to_string(),
+            path: PathBuf::from(path_str),
+            node_type: TreeNodeType::Folder,
+            children,
+            is_expanded: Signal::new_in_scope(is_expanded, scope_id),
+            selection_state: Signal::new_in_scope(selection_state, scope_id),
+            depth,
+        }
+    }
+
+    #[test]
+    fn test_collect_all_file_paths_recursive() {
+        #[allow(non_snake_case)]
+        fn TestComponent() -> Element {
+            let scope_id = current_scope_id()
+                .expect("TestComponent must run in a Dioxus scope to get scope_id");
+
+            let file1_path = PathBuf::from("dir1/file1.txt");
+            let file2_path = PathBuf::from("dir1/subdir1/file2.txt");
+            let file3_path = PathBuf::from("file3.txt");
+
+            let file1 = create_test_file_node(
+                scope_id,
+                0,
+                "file1.txt",
+                "dir1/file1.txt",
+                NodeSelectionState::NotSelected,
+                1,
+            );
+            let file2 = create_test_file_node(
+                scope_id,
+                1,
+                "file2.txt",
+                "dir1/subdir1/file2.txt",
+                NodeSelectionState::NotSelected,
+                2,
+            );
+            let file3 = create_test_file_node(
+                scope_id,
+                3,
+                "file3.txt",
+                "file3.txt",
+                NodeSelectionState::NotSelected,
+                0,
+            );
+
+            // Test on a single file node
+            let collected_paths_file1 = file1.collect_all_file_paths_recursive();
+            assert_eq!(collected_paths_file1.len(), 1);
+            assert!(collected_paths_file1.contains(&file1_path));
+
+            // Test on an empty folder
+            let empty_folder = create_test_folder_node(
+                scope_id,
+                10,
+                "empty_dir",
+                "empty_dir",
+                vec![],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert!(empty_folder.collect_all_file_paths_recursive().is_empty());
+
+            // Test on a folder with only files
+            let folder_with_files = create_test_folder_node(
+                scope_id,
+                20,
+                "dir_files_only",
+                "dir_files_only",
+                vec![file1.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            let collected_folder_files_only = folder_with_files.collect_all_file_paths_recursive();
+            assert_eq!(collected_folder_files_only.len(), 1);
+            assert!(collected_folder_files_only.contains(&file1_path));
+
+            // Test on a nested structure
+            let subdir1 = create_test_folder_node(
+                scope_id,
+                30,
+                "subdir1",
+                "dir1/subdir1",
+                vec![file2.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                1,
+            );
+            let dir1 = create_test_folder_node(
+                scope_id,
+                40,
+                "dir1",
+                "dir1",
+                vec![file1.clone(), subdir1],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+
+            let root_node_list = vec![dir1.clone(), file3.clone()]; // Simulating a root level structure
+
+            // Collect from dir1
+            let collected_dir1 = dir1.collect_all_file_paths_recursive();
+            assert_eq!(
+                collected_dir1.len(),
+                2,
+                "Dir1 should contain file1.txt and file2.txt"
+            );
+            assert!(collected_dir1.contains(&file1_path));
+            assert!(collected_dir1.contains(&file2_path));
+
+            // If we had a "root" conceptual folder containing dir1 and file3
+            let mut all_paths_from_root_structure = Vec::new();
+            for node in root_node_list {
+                all_paths_from_root_structure.extend(node.collect_all_file_paths_recursive());
+            }
+            all_paths_from_root_structure.sort();
+            let mut expected_paths =
+                vec![file1_path.clone(), file2_path.clone(), file3_path.clone()];
+            expected_paths.sort();
+            assert_eq!(
+                all_paths_from_root_structure, expected_paths,
+                "All paths from structure should be collected"
+            );
+
+            rsx! { div {} } // Dummy element
+        }
+
+        let mut vdom = VirtualDom::new(TestComponent);
+        vdom.rebuild_in_place();
+    }
+
+    #[test]
+    fn test_calculate_folder_selection_state() {
+        #[allow(non_snake_case)]
+        fn TestComponent() -> Element {
+            let scope_id = current_scope_id()
+                .expect("TestComponent must run in a Dioxus scope to get scope_id");
+
+            let empty_folder = create_test_folder_node(
+                scope_id,
+                0,
+                "empty",
+                "empty",
+                vec![],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&empty_folder),
+                NodeSelectionState::NotSelected
+            );
+
+            // All children selected
+            let file1_sel =
+                create_test_file_node(scope_id, 1, "f1", "f1", NodeSelectionState::Selected, 1);
+            let file2_sel =
+                create_test_file_node(scope_id, 2, "f2", "f2", NodeSelectionState::Selected, 1);
+            let folder_all_sel = create_test_folder_node(
+                scope_id,
+                3,
+                "all_sel",
+                "all_sel",
+                vec![file1_sel.clone(), file2_sel.clone()],
+                false,
+                NodeSelectionState::NotSelected, // Initial state of folder itself, calculation is tested
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_all_sel),
+                NodeSelectionState::Selected
+            );
+
+            // All children not selected
+            let file1_not_sel = create_test_file_node(
+                scope_id,
+                4,
+                "f1ns",
+                "f1ns",
+                NodeSelectionState::NotSelected,
+                1,
+            );
+            let file2_not_sel = create_test_file_node(
+                scope_id,
+                5,
+                "f2ns",
+                "f2ns",
+                NodeSelectionState::NotSelected,
+                1,
+            );
+            let folder_all_not_sel = create_test_folder_node(
+                scope_id,
+                6,
+                "all_not_sel",
+                "all_not_sel",
+                vec![file1_not_sel.clone(), file2_not_sel.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_all_not_sel),
+                NodeSelectionState::NotSelected
+            );
+
+            // Mixed: some selected, some not selected (direct children files)
+            let folder_mixed_direct = create_test_folder_node(
+                scope_id,
+                7,
+                "mixed_direct",
+                "mixed_direct",
+                vec![file1_sel.clone(), file2_not_sel.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_mixed_direct),
+                NodeSelectionState::PartiallySelected
+            );
+
+            // Child is PartiallySelected folder
+            let subfolder_partial_child_file_sel = create_test_file_node(
+                scope_id,
+                8,
+                "sf_f_sel",
+                "sf_f_sel",
+                NodeSelectionState::Selected,
+                2,
+            );
+            let subfolder_partial_child_file_not_sel = create_test_file_node(
+                scope_id,
+                9,
+                "sf_f_not_sel",
+                "sf_f_not_sel",
+                NodeSelectionState::NotSelected,
+                2,
+            );
+            // For this subfolder, its *own* selection_state signal must be correctly pre-set for the test.
+            // The create_test_folder_node initializes its selection_state Signal based on the passed argument.
+            // So, if we want to test how calculate_folder_selection_state behaves with a child that *is* PartiallySelected,
+            // we must ensure that child node's Signal<NodeSelectionState> *reads* as PartiallySelected.
+            let subfolder_partial = create_test_folder_node(
+                scope_id,
+                10,
+                "sub_partial",
+                "sub_partial",
+                vec![
+                    subfolder_partial_child_file_sel, // These define what subfolder_partial *would* calculate to
+                    subfolder_partial_child_file_not_sel,
+                ],
+                false,
+                NodeSelectionState::PartiallySelected, // We explicitly set its Signal to this state
+                1,
+            );
+
+            let folder_with_partial_sub = create_test_folder_node(
+                scope_id,
+                11,
+                "with_partial_sub",
+                "with_partial_sub",
+                vec![subfolder_partial.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_with_partial_sub),
+                NodeSelectionState::PartiallySelected
+            );
+
+            // Mixed: one child folder Selected, one child file NotSelected
+            let subfolder_all_sel_child1 = create_test_file_node(
+                scope_id,
+                12,
+                "sf_all_c1",
+                "sf_all_c1",
+                NodeSelectionState::Selected,
+                2,
+            );
+            let subfolder_all_sel_child2 = create_test_file_node(
+                scope_id,
+                13,
+                "sf_all_c2",
+                "sf_all_c2",
+                NodeSelectionState::Selected,
+                2,
+            );
+            let subfolder_fully_sel = create_test_folder_node(
+                scope_id,
+                14,
+                "sub_full_sel",
+                "sub_full_sel",
+                vec![subfolder_all_sel_child1, subfolder_all_sel_child2],
+                false,
+                NodeSelectionState::Selected, // Explicitly set its Signal to Selected
+                1,
+            );
+
+            let folder_mixed_types = create_test_folder_node(
+                scope_id,
+                15,
+                "mixed_types",
+                "mixed_types",
+                vec![subfolder_fully_sel.clone(), file2_not_sel.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_mixed_types),
+                NodeSelectionState::PartiallySelected
+            );
+
+            // All children (files and folders) are selected
+            let folder_all_children_types_sel = create_test_folder_node(
+                scope_id,
+                16,
+                "all_children_types_sel",
+                "all_children_types_sel",
+                vec![subfolder_fully_sel.clone(), file1_sel.clone()],
+                false,
+                NodeSelectionState::NotSelected,
+                0,
+            );
+            assert_eq!(
+                calculate_folder_selection_state(&folder_all_children_types_sel),
+                NodeSelectionState::Selected
+            );
+
+            // File node passed to calculate_folder_selection_state (should return its own state)
+            assert_eq!(
+                calculate_folder_selection_state(&file1_sel),
+                NodeSelectionState::Selected
+            );
+
+            rsx! { div {} } // Dummy element
+        }
+        let mut vdom = VirtualDom::new(TestComponent);
+        vdom.rebuild_in_place();
+    }
+
+    fn create_file_info_for_test(path_str: &str) -> FileInfo {
+        let path = PathBuf::from(path_str);
+        FileInfo {
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            path,
+            size: 0,
+            token_count: 0,
+        }
+    }
+
+    // Helper to find a node by path in a Vec<FileTreeNode>
+    fn find_node_by_path(nodes: &[FileTreeNode], path_to_find: &PathBuf) -> Option<FileTreeNode> {
+        for node in nodes {
+            if node.path == *path_to_find {
+                return Some(node.clone());
+            }
+            if !node.children.is_empty() {
+                if let Some(found_child) = find_node_by_path(&node.children, path_to_find) {
+                    return Some(found_child);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_selection_state_logic_full_pipeline() {
+        #[allow(non_snake_case)]
+        fn TestComponent() -> Element {
+            let scope_id = current_scope_id().expect("TestComponent must run in a Dioxus scope");
+
+            let all_files = vec![
+                create_file_info_for_test("src/main.rs"),
+                create_file_info_for_test("src/components/button.rs"),
+                create_file_info_for_test("src/components/mod.rs"),
+                create_file_info_for_test("README.md"),
+            ];
+
+            // Scenario 1: Select src/components/button.rs
+            let mut selected_paths_set = HashSet::new();
+            selected_paths_set.insert(PathBuf::from("src/components/button.rs"));
+
+            let blueprints = build_tree_from_file_info(&all_files, &selected_paths_set);
+            let mut tree_nodes: Vec<FileTreeNode> = blueprints
+                .into_iter()
+                .map(|b| convert_blueprint_to_file_tree_node_recursive(b, scope_id))
+                .collect();
+            update_folder_selection_states_recursive(&mut tree_nodes);
+
+            // Assertions for Scenario 1
+            let button_rs =
+                find_node_by_path(&tree_nodes, &PathBuf::from("src/components/button.rs"))
+                    .expect("button.rs not found");
+            assert_eq!(
+                *button_rs.selection_state.read(),
+                NodeSelectionState::Selected,
+                "button.rs should be Selected"
+            );
+
+            let components_folder =
+                find_node_by_path(&tree_nodes, &PathBuf::from("src/components"))
+                    .expect("components folder not found");
+            assert_eq!(
+                *components_folder.selection_state.read(),
+                NodeSelectionState::PartiallySelected,
+                "components folder should be PartiallySelected"
+            );
+
+            let src_folder = find_node_by_path(&tree_nodes, &PathBuf::from("src"))
+                .expect("src folder not found");
+            assert_eq!(
+                *src_folder.selection_state.read(),
+                NodeSelectionState::PartiallySelected,
+                "src folder should be PartiallySelected"
+            );
+
+            let readme = find_node_by_path(&tree_nodes, &PathBuf::from("README.md"))
+                .expect("README.md not found");
+            assert_eq!(
+                *readme.selection_state.read(),
+                NodeSelectionState::NotSelected,
+                "README.md should be NotSelected"
+            );
+
+            // Scenario 2: Select all files in src/components/
+            selected_paths_set.clear();
+            selected_paths_set.insert(PathBuf::from("src/components/button.rs"));
+            selected_paths_set.insert(PathBuf::from("src/components/mod.rs"));
+
+            let blueprints_2 = build_tree_from_file_info(&all_files, &selected_paths_set);
+            let mut tree_nodes_2: Vec<FileTreeNode> = blueprints_2
+                .into_iter()
+                .map(|b| convert_blueprint_to_file_tree_node_recursive(b, scope_id))
+                .collect();
+            update_folder_selection_states_recursive(&mut tree_nodes_2);
+
+            // Assertions for Scenario 2
+            let components_folder_2 =
+                find_node_by_path(&tree_nodes_2, &PathBuf::from("src/components"))
+                    .expect("components folder S2 not found");
+            assert_eq!(
+                *components_folder_2.selection_state.read(),
+                NodeSelectionState::Selected,
+                "components folder S2 should be Selected"
+            );
+
+            let src_folder_2 = find_node_by_path(&tree_nodes_2, &PathBuf::from("src"))
+                .expect("src folder S2 not found");
+            assert_eq!(
+                *src_folder_2.selection_state.read(),
+                NodeSelectionState::PartiallySelected,
+                "src folder S2 should be PartiallySelected (main.rs not selected)"
+            );
+
+            // Scenario 3: Select all files
+            selected_paths_set.clear();
+            for file_info in &all_files {
+                selected_paths_set.insert(file_info.path.clone());
+            }
+
+            let blueprints_3 = build_tree_from_file_info(&all_files, &selected_paths_set);
+            let mut tree_nodes_3: Vec<FileTreeNode> = blueprints_3
+                .into_iter()
+                .map(|b| convert_blueprint_to_file_tree_node_recursive(b, scope_id))
+                .collect();
+            update_folder_selection_states_recursive(&mut tree_nodes_3);
+
+            // Assertions for Scenario 3
+            let readme_3 = find_node_by_path(&tree_nodes_3, &PathBuf::from("README.md"))
+                .expect("README.md S3 not found");
+            assert_eq!(
+                *readme_3.selection_state.read(),
+                NodeSelectionState::Selected,
+                "README.md S3 should be Selected"
+            );
+
+            let src_folder_3 = find_node_by_path(&tree_nodes_3, &PathBuf::from("src"))
+                .expect("src folder S3 not found");
+            assert_eq!(
+                *src_folder_3.selection_state.read(),
+                NodeSelectionState::Selected,
+                "src folder S3 should be Selected"
+            );
+
+            let components_folder_3 =
+                find_node_by_path(&tree_nodes_3, &PathBuf::from("src/components"))
+                    .expect("components folder S3 not found");
+            assert_eq!(
+                *components_folder_3.selection_state.read(),
+                NodeSelectionState::Selected,
+                "components folder S3 should be Selected"
+            );
+
+            rsx! { div {} }
+        }
+        let mut vdom = VirtualDom::new(TestComponent);
+        vdom.rebuild_in_place();
+    }
+
+    #[test]
+    fn test_folder_expansion_signal() {
+        #[allow(non_snake_case)]
+        fn TestComponent() -> Element {
+            let scope_id = current_scope_id().expect("TestComponent must run in a Dioxus scope");
+
+            let folder = create_test_folder_node(
+                scope_id,
+                100,
+                "test_folder",
+                "test_folder_path",
+                vec![],
+                false, // Initially not expanded
+                NodeSelectionState::NotSelected,
+                0,
+            );
+
+            assert_eq!(
+                *folder.is_expanded.read(),
+                false,
+                "Folder should initially be collapsed"
+            );
+
+            // Simulate toggling the signal correctly
+            let mut signal_mut = folder.is_expanded;
+            let current_val_1 = *signal_mut.read();
+            signal_mut.set(!current_val_1);
+            assert_eq!(
+                *folder.is_expanded.read(),
+                true,
+                "Folder should now be expanded"
+            );
+
+            let current_val_2 = *signal_mut.read();
+            signal_mut.set(!current_val_2);
+            assert_eq!(
+                *folder.is_expanded.read(),
+                false,
+                "Folder should be collapsed again"
+            );
+
+            rsx! { div {} }
+        }
+        let mut vdom = VirtualDom::new(TestComponent);
+        vdom.rebuild_in_place();
     }
 }

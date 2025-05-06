@@ -177,11 +177,15 @@ pub fn build_tree_from_file_info(
 
 // Recursive function to convert blueprints to signal-based FileTreeNodes
 // This must be called within a Dioxus component/hook context for Signal::new to work.
-fn convert_blueprint_to_file_tree_node_recursive(blueprint: FileTreeNodeBlueprint) -> FileTreeNode {
+// Making it pub(crate) for testing the full tree construction and update logic.
+pub(crate) fn convert_blueprint_to_file_tree_node_recursive(
+    blueprint: FileTreeNodeBlueprint,
+    scope_id: ScopeId,
+) -> FileTreeNode {
     let children: Vec<FileTreeNode> = blueprint
         .children
         .into_iter()
-        .map(convert_blueprint_to_file_tree_node_recursive)
+        .map(|b| convert_blueprint_to_file_tree_node_recursive(b, scope_id))
         .collect();
 
     FileTreeNode {
@@ -190,8 +194,8 @@ fn convert_blueprint_to_file_tree_node_recursive(blueprint: FileTreeNodeBlueprin
         path: blueprint.path,
         node_type: blueprint.node_type,
         children,
-        is_expanded: Signal::new(blueprint.is_expanded),
-        selection_state: Signal::new(blueprint.selection_state),
+        is_expanded: Signal::new_in_scope(blueprint.is_expanded, scope_id),
+        selection_state: Signal::new_in_scope(blueprint.selection_state, scope_id),
         depth: blueprint.depth,
     }
 }
@@ -199,7 +203,7 @@ fn convert_blueprint_to_file_tree_node_recursive(blueprint: FileTreeNodeBlueprin
 // --- Start of Story 8 Implementation ---
 
 // Task 8.1: Helper function to calculate a folder's selection state based on its children.
-fn calculate_folder_selection_state(folder_node: &FileTreeNode) -> NodeSelectionState {
+pub fn calculate_folder_selection_state(folder_node: &FileTreeNode) -> NodeSelectionState {
     if folder_node.node_type == TreeNodeType::File {
         // This function is intended for folders. If called on a file,
         // it should ideally not happen, but return its own state as a fallback.
@@ -242,7 +246,8 @@ fn calculate_folder_selection_state(folder_node: &FileTreeNode) -> NodeSelection
 }
 
 // Task 8.2 (Helper): Recursively update folder selection states from bottom up.
-fn update_folder_selection_states_recursive(nodes: &[FileTreeNode]) {
+// Making it pub(crate) for testing.
+pub(crate) fn update_folder_selection_states_recursive(nodes: &[FileTreeNode]) {
     for node in nodes {
         if node.node_type == TreeNodeType::Folder {
             // First, ensure all children (and their descendants) are up-to-date.
@@ -278,21 +283,18 @@ pub struct FileTreeProps {
 pub fn FileTree(props: FileTreeProps) -> Element {
     let mut tree_display_nodes = use_signal(Vec::new);
 
-    // The use_effect captures and moves `props.all_files` and `props.selected_paths`.
-    // To use them in other closures (like button onclicks), we need to handle ownership.
-    // `props.selected_paths` is a Signal, which is Copy, so it can be copied before being moved.
-    // `props.all_files` is a Vec, not Copy, so it must be cloned if used after a move or by multiple move closures.
-
-    let all_files_clone_for_buttons = props.all_files.clone(); // Clone for the button
-    let selected_paths_for_buttons = props.selected_paths; // Signal is Copy
+    let all_files_clone_for_buttons = props.all_files.clone();
+    let selected_paths_for_buttons = props.selected_paths;
 
     use_effect(move || {
-        // props.all_files and props.selected_paths are moved into this closure
+        // Correctly obtain scope_id for convert_blueprint_to_file_tree_node_recursive
+        let effect_scope_id = current_scope_id().expect("use_effect must have a scope_id");
+
         let blueprints = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
 
         let new_display_nodes: Vec<FileTreeNode> = blueprints
             .into_iter()
-            .map(convert_blueprint_to_file_tree_node_recursive)
+            .map(|b| convert_blueprint_to_file_tree_node_recursive(b, effect_scope_id)) // Pass correct scope_id
             .collect();
 
         update_folder_selection_states_recursive(&new_display_nodes);
