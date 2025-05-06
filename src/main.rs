@@ -354,11 +354,8 @@ fn App() -> Element {
                 }
             } else {
                 div {
-                    class: "flex flex-col items-center justify-center h-full",
-                    div {
-                        class: "text-2xl font-bold mb-4",
-                        "Welcome to Context Loader"
-                    }
+                    class: "flex flex-col items-center justify-center h-full w-full", // Added w-full
+                    // Welcome message removed
                     div {
                         class: "text-lg text-gray-600",
                         "Open a workspace to get started"

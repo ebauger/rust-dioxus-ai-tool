@@ -44,6 +44,28 @@ pub struct FileTreeNode {
     pub depth: usize,
 }
 
+impl FileTreeNode {
+    // Helper function to collect all descendant file paths for a folder node
+    pub fn collect_all_file_paths_recursive(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if self.node_type == TreeNodeType::File {
+            // Although this function is intended for folders,
+            // if called on a file, it should return its own path.
+            paths.push(self.path.clone());
+        } else {
+            for child in &self.children {
+                match child.node_type {
+                    TreeNodeType::File => paths.push(child.path.clone()),
+                    TreeNodeType::Folder => {
+                        paths.extend(child.collect_all_file_paths_recursive());
+                    }
+                }
+            }
+        }
+        paths
+    }
+}
+
 // Helper to find or create a blueprint node in a list of children blueprints
 fn find_or_create_blueprint_node<'a>(
     children: &'a mut Vec<FileTreeNodeBlueprint>,
@@ -237,7 +259,7 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
     };
     let indent_style = format!("padding-left: {}px;", props.node.depth * 20);
     let mut is_expanded_signal = props.node.is_expanded;
-    let node_type = props.node.node_type.clone();
+    let node_type_for_click_logic = props.node.node_type.clone(); // Clone for the click handler
 
     let unique_checkbox_id = format!("ftn-checkbox-{}", props.node.id);
 
@@ -247,108 +269,103 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
     let window = use_window();
 
     // Clone necessary props for the oninput closure
-    let current_node_path = props.node.path.clone();
-    let current_node_type = props.node.node_type.clone();
-    let current_node_children = props.node.children.clone(); // Clone children for folder logic
-    let mut selected_paths_signal = props.selected_paths; // Get the signal itself
+    let node_for_input = props.node.clone();
+    let mut selected_paths_signal = props.selected_paths; // This is already a Signal
 
     use_effect(move || {
-        let state = *selection_state_for_effect.read();
-        let js_command = match state {
-            NodeSelectionState::PartiallySelected => {
-                format!(
-                    "document.getElementById('{}').indeterminate = true;",
-                    unique_checkbox_id_for_effect
-                )
+        // Script to set indeterminate state
+        let script = format!(
+            r#"
+            var checkbox = document.getElementById('{}');
+            if (checkbox) {{
+                checkbox.indeterminate = {};
+            }}
+            "#,
+            unique_checkbox_id_for_effect,
+            if *selection_state_for_effect.read() == NodeSelectionState::PartiallySelected {
+                "true"
+            } else {
+                "false"
             }
-            _ => {
-                format!(
-                    "document.getElementById('{}').indeterminate = false;",
-                    unique_checkbox_id_for_effect
-                )
-            }
-        };
-        let full_js = format!("try {{ {} }} catch(e) {{ console.error('Failed to set indeterminate for {}: ', e, '{}'); }}", js_command, unique_checkbox_id_for_effect, js_command);
-
-        if let Err(e) = window.webview.evaluate_script(&full_js) {
-            log::error!(
-                "Failed to evaluate script for indeterminate checkbox {}: {:?}",
-                unique_checkbox_id_for_effect,
-                e
-            );
+        );
+        if let Err(e) = window.webview.evaluate_script(&script) {
+            log::error!("Failed to set indeterminate state: {}", e);
         }
     });
 
     rsx! {
-        div {
-            style: "{indent_style}",
-            class: "file-tree-node-row flex items-center",
-            input {
-                r#type: "checkbox",
-                class: "mr-1",
-                id: "{unique_checkbox_id}",
-                checked: *props.node.selection_state.read() == NodeSelectionState::Selected,
-                oninput: move |event| {
-                    let is_checked = event.value().parse::<bool>().unwrap_or(false);
-                    let mut current_selected = selected_paths_signal.write();
-
-                    fn toggle_descendants(
-                        node_children: &[FileTreeNode],
-                        selected_paths_writer: &mut Write<'_, HashSet<PathBuf>>,
-                        should_select: bool
-                    ) {
-                        for child in node_children {
-                            if child.node_type == TreeNodeType::File {
-                                if should_select {
-                                    selected_paths_writer.insert(child.path.clone());
-                                } else {
-                                    selected_paths_writer.remove(&child.path);
-                                }
-                            }
-                            if !child.children.is_empty() {
-                                toggle_descendants(&child.children, selected_paths_writer, should_select);
-                            }
-                        }
-                    }
-
-                    match current_node_type {
-                        TreeNodeType::File => {
-                            if is_checked {
-                                current_selected.insert(current_node_path.clone());
-                            } else {
-                                current_selected.remove(&current_node_path);
-                            }
-                        }
-                        TreeNodeType::Folder => {
-                            // For a folder, select/deselect itself (if it's a selectable entity, TBD)
-                            // and all its descendants.
-                            // Current task: affect descendants based on folder click.
-                            // For now, treat folder click as intent for all its direct and indirect children files.
-                            toggle_descendants(&current_node_children, &mut current_selected, is_checked);
-
-                            // Also toggle the folder itself if it should be part of selected_paths
-                            // This depends on whether folders themselves are considered "selected items"
-                            // or just containers. For now, let's assume folders are not added to selected_paths directly,
-                            // their state is derived. But if a folder is explicitly clicked, its files are affected.
-                        }
-                    }
-                }
-            }
-            span {
-                class: "cursor-pointer",
+        li {
+            class: "file-tree-node",
+            key: "{props.node.id}", // Key for Dioxus list rendering
+            div {
+                class: "node-row flex items-center hover:bg-gray-200 dark:hover:bg-gray-700 p-1 rounded",
+                style: "{indent_style}",
                 onclick: move |_| {
-                    if node_type == TreeNodeType::Folder {
-                        is_expanded_signal.toggle();
+                    if node_type_for_click_logic == TreeNodeType::Folder {
+                        let current_value = *is_expanded_signal.read();
+                        is_expanded_signal.set(!current_value);
                     }
                 },
-                "{icon} {props.node.name}"
+                input {
+                    id: "{unique_checkbox_id}",
+                    "type": "checkbox",
+                    class: "mr-2 form-checkbox rounded text-blue-500 focus:ring-blue-500 dark:text-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600",
+                    checked: props.node.selection_state.read().clone() == NodeSelectionState::Selected,
+                    // Indeterminate state handled by use_effect above
+                    oninput: move |event| {
+                        let is_checked = event.value().parse::<bool>().unwrap_or_else(|_| {
+                            log::warn!("Could not parse checkbox value: '{}', defaulting to false.", event.value());
+                            false
+                        });
+                        let mut selected_paths_writer = selected_paths_signal.write();
+
+                        match node_for_input.node_type {
+                            TreeNodeType::File => {
+                                if is_checked {
+                                    selected_paths_writer.insert(node_for_input.path.clone());
+                                } else {
+                                    selected_paths_writer.remove(&node_for_input.path);
+                                }
+                            }
+                            TreeNodeType::Folder => {
+                                let descendant_file_paths = node_for_input.collect_all_file_paths_recursive();
+                                for path in descendant_file_paths {
+                                    if is_checked {
+                                        selected_paths_writer.insert(path);
+                                    } else {
+                                        selected_paths_writer.remove(&path);
+                                    }
+                                }
+                                // Also update the folder's own path if folders are directly selectable
+                                // For now, assuming folders reflect state of children.
+                                // If folders themselves are entities to be selected (e.g. to select the folder itself),
+                                // this logic might need adjustment or the `collect_all_file_paths_recursive`
+                                // might need to include the folder path if a folder node can be a "target" itself.
+                                // Based on the task "A file node is Selected if its path is in selected_paths",
+                                // it seems only files are directly tracked in `selected_paths`.
+                            }
+                        }
+                    }
+                },
+                span {
+                    class: "node-icon mr-1",
+                    "{icon}"
+                }
+                span {
+                    class: "node-name",
+                    "{props.node.name}"
+                }
             }
-        }
-        if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
-            for child_node in props.node.children.iter() {
-                FileTreeNodeDisplay {
-                    node: child_node.clone(),
-                    selected_paths: props.selected_paths,
+            if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
+                ul {
+                    class: "list-none", // Ensure nested lists also don't have bullets
+                    for child_node in &props.node.children {
+                        FileTreeNodeDisplay {
+                            key: "{child_node.id}",
+                            node: child_node.clone(),
+                            selected_paths: props.selected_paths,
+                        }
+                    }
                 }
             }
         }
