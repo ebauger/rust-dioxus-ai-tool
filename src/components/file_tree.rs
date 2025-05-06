@@ -1,6 +1,6 @@
 use crate::fs_utils::FileInfo;
 use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,15 +16,15 @@ pub enum NodeSelectionState {
     PartiallySelected,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct FileTreeNode {
     pub id: usize,
     pub name: String,
     pub path: PathBuf,
     pub node_type: TreeNodeType,
     pub children: Vec<FileTreeNode>,
-    pub is_expanded: Signal<bool>,
-    pub selection_state: Signal<NodeSelectionState>,
+    pub is_expanded: bool,
+    pub selection_state: NodeSelectionState,
     pub depth: usize,
 }
 
@@ -67,8 +67,8 @@ fn find_or_create_node<'a>(
             path: full_path.clone(),
             node_type,
             children: Vec::new(),
-            is_expanded: Signal::new(if depth == 0 { true } else { is_root_folder }), // Expand root folders
-            selection_state: Signal::new(NodeSelectionState::NotSelected), // Initial state
+            is_expanded: if depth == 0 { true } else { is_root_folder }, // plain bool
+            selection_state: NodeSelectionState::NotSelected,            // plain enum
             depth,
         };
         children.push(new_node);
@@ -88,110 +88,14 @@ pub fn build_tree_from_file_info(
         return Vec::new();
     }
 
-    let mut roots: Vec<FileTreeNode> = Vec::new();
-    let mut id_counter = 0; // Simple ID counter
-
     // Sort files by path to process them in a somewhat predictable order,
     // which helps in constructing the tree layer by layer.
     let mut sorted_files = files.to_vec();
     sorted_files.sort_by_key(|f| f.path.clone());
 
-    for file_info in &sorted_files {
-        let path = &file_info.path;
-        let mut current_children_list = &mut roots;
-        let mut current_path = PathBuf::new();
-        let components: Vec<_> = path.components().collect();
-
-        for (idx, component) in components.iter().enumerate() {
-            let component_name = component.as_os_str().to_string_lossy().into_owned();
-            current_path.push(component_name.clone());
-
-            let is_last_component = idx == components.len() - 1;
-
-            if is_last_component {
-                // This is the file itself or the last folder component if path ends with /
-                let node_type = TreeNodeType::File; // Assuming FileInfo always refers to files
-                let id = id_counter;
-                id_counter += 1;
-
-                let selection = if selected_paths.contains(&file_info.path) {
-                    NodeSelectionState::Selected
-                } else {
-                    NodeSelectionState::NotSelected
-                };
-
-                let file_node = FileTreeNode {
-                    id,
-                    name: file_info.name.clone(), // Use name from FileInfo for files
-                    path: file_info.path.clone(),
-                    node_type,
-                    children: Vec::new(),            // Files have no children
-                    is_expanded: Signal::new(false), // Files cannot be expanded
-                    selection_state: Signal::new(selection),
-                    depth: idx,
-                };
-                current_children_list.push(file_node);
-            } else {
-                // This is a directory component
-                let existing_node = current_children_list
-                    .iter_mut()
-                    .find(|n| n.name == component_name && n.node_type == TreeNodeType::Folder);
-
-                if let Some(node) = existing_node {
-                    // The folder already exists, descend into its children list
-                    // Need to break the mutable borrow to re-borrow current_children_list
-                    // This part is tricky. We need to get a mutable reference to the children of 'node'.
-                    // Let's rethink the structure to avoid complex borrowing.
-                    // A HashMap approach might be better or a recursive helper.
-
-                    // For now, let's try a simpler iterative approach that might create duplicates
-                    // or require a separate pass to merge.
-                    // The find_or_create_node helper is intended to simplify this.
-                    // current_children_list = &mut node.children; // This line causes borrow checker issues if not careful
-                    // To avoid this, find_or_create_node returns a mutable ref to the node,
-                    // and we then access its children.
-                    let temp_node_path = current_path.clone(); // Path for the current folder component
-                    let parent_node = find_or_create_node(
-                        current_children_list,
-                        &component_name,
-                        &temp_node_path,
-                        TreeNodeType::Folder,
-                        &mut id_counter,
-                        idx,
-                        idx == 0, // Expand only the true root folders initially
-                    );
-                    current_children_list = &mut parent_node.children;
-                } else {
-                    // Folder does not exist, create it
-                    let new_folder_id = id_counter;
-                    id_counter += 1;
-                    let new_folder_node = FileTreeNode {
-                        id: new_folder_id,
-                        name: component_name.clone(),
-                        path: current_path.clone(),
-                        node_type: TreeNodeType::Folder,
-                        children: Vec::new(),
-                        is_expanded: Signal::new(idx == 0), // Expand only the true root folders initially
-                        selection_state: Signal::new(NodeSelectionState::NotSelected), // Will be updated
-                        depth: idx,
-                    };
-                    current_children_list.push(new_folder_node);
-                    current_children_list = &mut current_children_list.last_mut().unwrap().children;
-                }
-            }
-        }
-    }
-
-    // Post-processing step: Merge duplicate folder entries if any were created due to the iterative approach.
-    // This is a simplified tree builder. A more robust one would use a HashMap to track nodes by path.
-    // For now, let's assume the current iterative approach with find_or_create_node (if correctly used) handles this.
-    // The current implementation of find_or_create_node combined with iterating path components should build the hierarchy correctly
-    // without creating duplicates *within the same level*.
-    // The logic within the loop for handling folders needs to correctly use `find_or_create_node`.
-
     // Revised loop structure using find_or_create_node more directly:
     let mut final_roots: Vec<FileTreeNode> = Vec::new();
-    let mut node_map: HashMap<PathBuf, usize> = HashMap::new(); // path -> id for quick lookups if needed, but not directly used in this simplified build
+    // let mut node_map: HashMap<PathBuf, usize> = HashMap::new(); // Not used for now
     let mut unique_id_counter = 0;
 
     for file_info in &sorted_files {
@@ -211,6 +115,7 @@ pub fn build_tree_from_file_info(
 
             if is_last_component {
                 // It's a file
+                // Ensure file is not duplicated if path appears multiple times (though FileInfo should be unique by path)
                 if !current_parent_children_list
                     .iter()
                     .any(|n| n.path == *path && n.node_type == TreeNodeType::File)
@@ -228,8 +133,8 @@ pub fn build_tree_from_file_info(
                         path: path.clone(),
                         node_type: TreeNodeType::File,
                         children: Vec::new(),
-                        is_expanded: Signal::new(false),
-                        selection_state: Signal::new(selection),
+                        is_expanded: false,         // plain bool
+                        selection_state: selection, // plain enum
                         depth: idx,
                     };
                     current_parent_children_list.push(file_node);
@@ -251,8 +156,55 @@ pub fn build_tree_from_file_info(
         }
     }
 
-    // The selection state for folders will be calculated later based on children (Story 7 & 8)
-    // For now, they are NotSelected unless explicitly part of selected_paths (which they usually aren't, files are)
-
     final_roots
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct FileTreeProps {
+    pub all_files: Vec<FileInfo>,
+    pub selected_paths: Signal<HashSet<PathBuf>>,
+    pub on_select_all: EventHandler<()>,
+    pub on_deselect_all: EventHandler<()>,
+}
+
+#[allow(non_snake_case)]
+pub fn FileTree(props: FileTreeProps) -> Element {
+    let mut tree_nodes = use_signal(Vec::new);
+
+    use_effect(move || {
+        // This effect runs when props.all_files changes (component re-renders)
+        // or when props.selected_paths signal changes.
+        let new_tree = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
+        tree_nodes.set(new_tree);
+    });
+
+    rsx! {
+        div {
+            class: "file-tree-container",
+            // TODO: Add Select All / Deselect All buttons here later, using props.on_select_all and props.on_deselect_all
+            ul {
+                class: "file-tree-list",
+                for node in tree_nodes.read().iter() {
+                    li {
+                        key: "{node.id}", // Unique key for Dioxus list rendering
+                        // Basic rendering: checkbox, name, type
+                        input {
+                            r#type: "checkbox",
+                            checked: node.selection_state == NodeSelectionState::Selected, // Direct access
+                        }
+                        span {
+                            " {node.name} "
+                        }
+                        span {
+                            match node.node_type {
+                                TreeNodeType::File => "(File)",
+                                TreeNodeType::Folder => "(Folder)",
+                            }
+                        }
+                        // Recursive rendering will be handled in Story 4
+                    }
+                }
+            }
+        }
+    }
 }

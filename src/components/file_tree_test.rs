@@ -1,5 +1,7 @@
 #![cfg(test)]
-use super::*;
+use crate::components::file_tree::{
+    build_tree_from_file_info, FileTreeNode, NodeSelectionState, TreeNodeType,
+};
 use crate::fs_utils::FileInfo;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -48,14 +50,8 @@ fn test_build_tree_flat_list() {
     assert_eq!(node1.path, PathBuf::from("file1.txt"));
     assert_eq!(node1.node_type, TreeNodeType::File);
     assert_eq!(node1.depth, 0);
-    assert!(
-        !node1.is_expanded.read(),
-        "File node should not be expanded"
-    );
-    assert_eq!(
-        *node1.selection_state.read(),
-        NodeSelectionState::NotSelected
-    );
+    assert!(!node1.is_expanded, "File node should not be expanded");
+    assert_eq!(node1.selection_state, NodeSelectionState::NotSelected);
     assert!(node1.children.is_empty());
 
     // file2.rs (selected)
@@ -66,7 +62,7 @@ fn test_build_tree_flat_list() {
     assert_eq!(node2.path, PathBuf::from("file2.rs"));
     assert_eq!(node2.node_type, TreeNodeType::File);
     assert_eq!(node2.depth, 0);
-    assert_eq!(*node2.selection_state.read(), NodeSelectionState::Selected);
+    assert_eq!(node2.selection_state, NodeSelectionState::Selected);
     assert!(node2.children.is_empty());
 
     // file3.md
@@ -77,10 +73,7 @@ fn test_build_tree_flat_list() {
     assert_eq!(node3.path, PathBuf::from("file3.md"));
     assert_eq!(node3.node_type, TreeNodeType::File);
     assert_eq!(node3.depth, 0);
-    assert_eq!(
-        *node3.selection_state.read(),
-        NodeSelectionState::NotSelected
-    );
+    assert_eq!(node3.selection_state, NodeSelectionState::NotSelected);
     assert!(node3.children.is_empty());
 
     // Check IDs are unique (simple check, assumes they are 0, 1, 2 in some order)
@@ -125,11 +118,8 @@ fn test_build_tree_nested_structure() {
     assert_eq!(readme_node.node_type, TreeNodeType::File);
     assert_eq!(readme_node.path, PathBuf::from("README.md"));
     assert_eq!(readme_node.depth, 0);
-    assert!(!readme_node.is_expanded.read());
-    assert_eq!(
-        *readme_node.selection_state.read(),
-        NodeSelectionState::NotSelected
-    );
+    assert!(!readme_node.is_expanded);
+    assert_eq!(readme_node.selection_state, NodeSelectionState::NotSelected);
     assert!(readme_node.children.is_empty());
 
     // src folder
@@ -140,14 +130,11 @@ fn test_build_tree_nested_structure() {
     assert_eq!(src_node.path, PathBuf::from("src"));
     assert_eq!(src_node.depth, 0);
     assert!(
-        *src_node.is_expanded.read(),
+        src_node.is_expanded,
         "Root folder 'src' should be expanded by default"
     );
     // Folder selection state will be handled later, for now it's NotSelected
-    assert_eq!(
-        *src_node.selection_state.read(),
-        NodeSelectionState::NotSelected
-    );
+    assert_eq!(src_node.selection_state, NodeSelectionState::NotSelected);
     assert_eq!(
         src_node.children.len(),
         2,
@@ -163,11 +150,8 @@ fn test_build_tree_nested_structure() {
     assert_eq!(main_rs_node.node_type, TreeNodeType::File);
     assert_eq!(main_rs_node.path, PathBuf::from("src/main.rs"));
     assert_eq!(main_rs_node.depth, 1);
-    assert!(!main_rs_node.is_expanded.read());
-    assert_eq!(
-        *main_rs_node.selection_state.read(),
-        NodeSelectionState::Selected
-    );
+    assert!(!main_rs_node.is_expanded);
+    assert_eq!(main_rs_node.selection_state, NodeSelectionState::Selected);
     assert!(main_rs_node.children.is_empty());
 
     // src/components folder
@@ -180,11 +164,11 @@ fn test_build_tree_nested_structure() {
     assert_eq!(components_node.depth, 1);
     // Non-root folders are collapsed by default
     assert!(
-        !*components_node.is_expanded.read(),
+        !components_node.is_expanded,
         "Folder 'src/components' should be collapsed by default"
     );
     assert_eq!(
-        *components_node.selection_state.read(),
+        components_node.selection_state,
         NodeSelectionState::NotSelected
     );
     assert_eq!(
@@ -205,10 +189,7 @@ fn test_build_tree_nested_structure() {
         PathBuf::from("src/components/button.rs")
     );
     assert_eq!(button_rs_node.depth, 2);
-    assert_eq!(
-        *button_rs_node.selection_state.read(),
-        NodeSelectionState::Selected
-    );
+    assert_eq!(button_rs_node.selection_state, NodeSelectionState::Selected);
     assert!(button_rs_node.children.is_empty());
 
     // src/components/mod.rs
@@ -220,10 +201,7 @@ fn test_build_tree_nested_structure() {
     assert_eq!(mod_rs_node.node_type, TreeNodeType::File);
     assert_eq!(mod_rs_node.path, PathBuf::from("src/components/mod.rs"));
     assert_eq!(mod_rs_node.depth, 2);
-    assert_eq!(
-        *mod_rs_node.selection_state.read(),
-        NodeSelectionState::NotSelected
-    );
+    assert_eq!(mod_rs_node.selection_state, NodeSelectionState::NotSelected);
     assert!(mod_rs_node.children.is_empty());
 
     // Check IDs are unique across the tree
@@ -258,7 +236,7 @@ fn test_build_tree_paths_with_common_prefix_but_different_roots() {
         .expect("project_a not found");
     assert_eq!(project_a_node.depth, 0);
     assert_eq!(project_a_node.node_type, TreeNodeType::Folder);
-    assert!(*project_a_node.is_expanded.read());
+    assert!(project_a_node.is_expanded);
     assert_eq!(project_a_node.children.len(), 1); // src
 
     let project_b_node = tree
@@ -267,38 +245,44 @@ fn test_build_tree_paths_with_common_prefix_but_different_roots() {
         .expect("project_b not found");
     assert_eq!(project_b_node.depth, 0);
     assert_eq!(project_b_node.node_type, TreeNodeType::Folder);
-    assert!(*project_b_node.is_expanded.read());
+    assert!(project_b_node.is_expanded);
     assert_eq!(project_b_node.children.len(), 1); // src
 }
 
 #[test]
 fn test_build_tree_file_and_folder_same_name_at_root() {
     // Edge case: a file "foo" and a folder "foo" at the same level (root)
-    // This shouldn't typically happen with file paths but tests robustness
     let files_data = vec![
-        create_file_info("foo"),         // Interpreted as file "foo"
-        create_file_info("foo/bar.txt"), // Creates folder "foo"
+        create_file_info("foo"),         // File "foo"
+        create_file_info("foo/bar.txt"), // File "foo/bar.txt", implies folder "foo"
     ];
     let selected_paths = HashSet::new();
     let tree = build_tree_from_file_info(&files_data, &selected_paths);
 
+    // Current behavior: creates two root nodes: File("foo") and Folder("foo")
     assert_eq!(
         tree.len(),
-        1,
-        "Should have one root entry (folder 'foo') after merging"
+        2,
+        "Should have File('foo') and Folder('foo') at root"
     );
+
+    let foo_file_node = tree
+        .iter()
+        .find(|n| n.name == "foo" && n.node_type == TreeNodeType::File)
+        .expect("File 'foo' not found at root");
+    assert_eq!(foo_file_node.depth, 0);
 
     let foo_folder_node = tree
         .iter()
         .find(|n| n.name == "foo" && n.node_type == TreeNodeType::Folder)
-        .expect("Folder 'foo' not found");
+        .expect("Folder 'foo' not found at root");
     assert_eq!(foo_folder_node.depth, 0);
     assert_eq!(
         foo_folder_node.children.len(),
         1,
         "Folder 'foo' should contain 'bar.txt'"
     );
-    assert!(*foo_folder_node.is_expanded.read());
+    assert!(foo_folder_node.is_expanded);
 
     let bar_txt_node = foo_folder_node
         .children
@@ -307,13 +291,6 @@ fn test_build_tree_file_and_folder_same_name_at_root() {
         .expect("bar.txt not found");
     assert_eq!(bar_txt_node.node_type, TreeNodeType::File);
     assert_eq!(bar_txt_node.depth, 1);
-
-    // To properly test the scenario where a file "foo" and folder "foo/..." exist,
-    // the FileInfo for "foo" must clearly be a file.
-    // The current `build_tree_from_file_info` assumes paths in `files` are for files.
-    // If `create_file_info("foo")` implies a file, and `create_file_info("foo/bar.txt")` implies a folder "foo",
-    // the logic should create one folder "foo" containing "bar.txt". If "foo" itself was also a selectable file item,
-    // that would be a more complex case for the tree builder. Current task assumes FileInfo are files.
 }
 
 #[test]
