@@ -226,13 +226,13 @@ pub struct FileTreeNodeDisplayProps {
 
 #[allow(non_snake_case)]
 pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
-    let node = &props.node; // props.node is already the FileTreeNode struct
+    // let node = props.node.clone(); // This clone is unused, props.node is used directly.
 
     // Task 4.2: Render checkbox, icon, name
-    let icon = match node.node_type {
+    let icon = match props.node.node_type {
         TreeNodeType::File => "📄",
         TreeNodeType::Folder => {
-            if *node.is_expanded.read() {
+            if *props.node.is_expanded.read() {
                 "📂"
             } else {
                 "📁"
@@ -241,34 +241,38 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
     };
 
     // Task 4.3: Apply indentation
-    let indent_style = format!("padding-left: {}px;", node.depth * 20);
+    let indent_style = format!("padding-left: {}px;", props.node.depth * 20);
+
+    // Task 5.1 & 5.2: onclick handler for folder expansion/collapse
+    let mut is_expanded_signal = props.node.is_expanded; // Get the signal to modify
+    let node_type = props.node.node_type.clone(); // Clone for the closure
 
     rsx! {
         div { // Each node is a div for easier styling and click handling
             style: "{indent_style}",
-            class: "file-tree-node-row", // Add a class for potential row hover/styling
+            class: "file-tree-node-row flex items-center", // Added flex and items-center
 
-            // Checkbox (will be more interactive later)
             input {
                 r#type: "checkbox",
-                checked: *node.selection_state.read() == NodeSelectionState::Selected,
-                // indeterminate: *node.selection_state.read() == NodeSelectionState::PartiallySelected, (Story 6)
-                // oninput event handler (Story 7)
+                class: "mr-1", // Added margin
+                checked: *props.node.selection_state.read() == NodeSelectionState::Selected,
             }
 
-            // Icon and Name (clickable for folders for expansion)
             span {
-                // onclick for folder expansion/collapse (Story 5)
-                // For now, just display
-                "{icon} {node.name}"
+                class: "cursor-pointer", // Make it look clickable
+                onclick: move |_| {
+                    if node_type == TreeNodeType::Folder { // Task 5.3: Only for folders
+                        is_expanded_signal.toggle(); // Corrected: Call toggle directly on the Signal
+                    }
+                },
+                "{icon} {props.node.name}"
             }
         }
 
-        // Task 4.4: Recursive rendering for children if folder and expanded
-        if node.node_type == TreeNodeType::Folder && *node.is_expanded.read() {
-            for child_node in node.children.iter() {
+        if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
+            for child_node in props.node.children.iter() {
                 FileTreeNodeDisplay {
-                    node: child_node.clone(), // Pass child FileTreeNode (already signal-containing)
+                    node: child_node.clone(),
                     selected_paths: props.selected_paths,
                 }
             }
