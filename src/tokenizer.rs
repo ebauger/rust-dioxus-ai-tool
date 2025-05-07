@@ -4,7 +4,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tiktoken_rs::cl100k_base;
-use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenEstimator {

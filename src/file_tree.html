@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>File Tree with Dynamic Indentation</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style></style>
+    </head>
+    <body class="p-6 bg-gray-50">
+        <div
+            class="max-w-md mx-auto bg-white p-4 rounded-lg shadow font-mono text-sm relative"
+        >
+            <ul id="treeRoot" class="list-none m-0 p-0"></ul>
+        </div>
+
+        <script>
+            // --- State Management ---
+            let nodeIdCounter = 0;
+            const nodeMap = new Map(); // Map ID -> node object for quick lookup
+
+            // --- Initial Data --- (Will be processed)
+            const treeData = {
+                name: "project-dir",
+                type: "folder",
+                children: [
+                    {
+                        name: "assets",
+                        type: "folder",
+                        children: [
+                            {
+                                name: "file_icons",
+                                type: "folder",
+                                children: [],
+                            },
+                            { name: "header.svg", type: "file" },
+                            { name: "main.css", type: "file" },
+                        ],
+                    },
+                    { name: "Cargo.lock", type: "file" },
+                    { name: "Cargo.toml", type: "file" },
+                    { name: "clippy.toml", type: "file" },
+                    { name: "Dioxus.toml", type: "file" },
+                    {
+                        name: "docs",
+                        type: "folder",
+                        children: [
+                            { name: "architecture_overview.md", type: "file" },
+                        ],
+                    },
+                    { name: "fix_bundle_name.sh", type: "file" },
+                    { name: "input.css", type: "file" },
+                    {
+                        name: "node_modules",
+                        type: "folder",
+                        children: [
+                            {
+                                name: "tailwindcss",
+                                type: "folder",
+                                children: [],
+                            },
+                        ],
+                    },
+                    { name: "package-lock.json", type: "file" },
+                    { name: "package.json", type: "file" },
+                    { name: "README.md", type: "file" },
+                    { name: "rust-toolchain.toml", type: "file" },
+                    { name: "rustfmt.toml", type: "file" },
+                    {
+                        name: "src",
+                        type: "folder",
+                        children: [
+                            { name: "cache.rs", type: "file" },
+                            {
+                                name: "components",
+                                type: "folder",
+                                children: [],
+                            },
+                            { name: "fs_utils.rs", type: "file" },
+                            { name: "main.rs", type: "file" },
+                            { name: "settings.rs", type: "file" },
+                            { name: "tokenizer.rs", type: "file" },
+                        ],
+                    },
+                    { name: "tailwind.config.js", type: "file" },
+                    {
+                        name: "target",
+                        type: "folder",
+                        children: [
+                            { name: "debug", type: "folder", children: [] },
+                            { name: "dx", type: "folder", children: [] },
+                        ],
+                    },
+                ],
+            };
+
+            function buildTree(node, depth = 0) {
+                const li = document.createElement("li");
+
+                // create the clickable row
+                const row = document.createElement("div");
+                // Add base class and conditional hover classes
+                const hoverClass =
+                    node.type === "folder"
+                        ? "hover:bg-gray-100/50"
+                        : "hover:bg-indigo-50/50";
+                row.className = `flex items-center py-1 px-2 rounded relative cursor-pointer ${hoverClass}`;
+                row.setAttribute("data-type", node.type);
+                // indent by level
+                row.style.paddingLeft = `${1.5 + depth * 1}rem`;
+
+                // --- Checkbox ---
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.className = "mr-2"; // Margin right for spacing
+                checkbox.dataset.id = node.id; // Link checkbox to node data
+                checkbox.checked = node.selected === true;
+                checkbox.indeterminate = node.selected === "partial";
+                checkbox.addEventListener("change", handleCheckboxChange);
+                row.appendChild(checkbox); // Add checkbox before icon
+
+                // --- Icon ---
+                const icon = document.createElement("span");
+                icon.textContent =
+                    node.type === "folder"
+                        ? depth === 0
+                            ? "📂"
+                            : "📁" // root open, others closed initially
+                        : "📄";
+                row.appendChild(icon);
+
+                // name
+                const name = document.createElement("span");
+                name.className = "ml-2 flex-1";
+                name.textContent = node.name;
+                row.appendChild(name);
+
+                li.appendChild(row);
+
+                // if folder, build and attach its children
+                if (node.type === "folder") {
+                    const subtree = document.createElement("ul");
+                    subtree.className = "list-none m-0 p-0";
+                    // root open, others closed
+                    if (depth > 0) subtree.classList.add("hidden");
+                    node.children.forEach((child) => {
+                        subtree.appendChild(buildTree(child, depth + 1));
+                    });
+                    li.appendChild(subtree);
+
+                    // toggle subtree visibility on row click
+                    row.addEventListener("click", (event) => {
+                        // Prevent toggling checkbox when clicking folder row itself
+                        // Also prevent folder toggle if the checkbox was the click target
+                        if (event.target === checkbox) return;
+                        const isHidden = subtree.classList.toggle("hidden");
+                        icon.textContent = isHidden ? "📁" : "📂";
+                    });
+                } else {
+                    // --- Add click listener for file rows ---
+                    row.addEventListener("click", (event) => {
+                        // Prevent double-trigger if clicking directly on checkbox
+                        if (event.target === checkbox) return;
+
+                        // Toggle the checkbox state
+                        checkbox.checked = !checkbox.checked;
+
+                        // Manually trigger the change event on the checkbox
+                        // This ensures handleCheckboxChange runs and updates the state map
+                        const changeEvent = new Event("change", {
+                            bubbles: true, // Allow event to bubble up if needed
+                        });
+                        checkbox.dispatchEvent(changeEvent);
+                    });
+                }
+
+                return li;
+            }
+
+            // --- Checkbox Logic ---
+
+            // Adds unique ID, selected state, and parent link to each node
+            function preprocessTreeData(node, parent = null) {
+                node.id = nodeIdCounter++;
+                node.selected = false; // Initial state: unselected
+                node.parent = parent; // Link for ancestor traversal
+                nodeMap.set(node.id, node);
+
+                if (node.type === "folder" && node.children) {
+                    node.children.forEach((child) =>
+                        preprocessTreeData(child, node),
+                    );
+                }
+            }
+
+            // Handles the checkbox change event
+            function handleCheckboxChange(event) {
+                const checkbox = event.target;
+                const nodeId = parseInt(checkbox.dataset.id, 10);
+                const node = nodeMap.get(nodeId);
+                if (!node) return;
+
+                const newState = checkbox.checked; // true or false
+
+                setNodeAndDescendantsState(node, newState);
+                updateAncestorStates(node);
+                updateAllCheckboxVisuals(treeData); // Update visuals for the whole tree
+            }
+
+            // Sets the state for a node and all its children recursively
+            function setNodeAndDescendantsState(node, state) {
+                node.selected = state;
+                nodeMap.set(node.id, node); // Update map
+
+                if (node.type === "folder" && node.children) {
+                    node.children.forEach((child) =>
+                        setNodeAndDescendantsState(child, state),
+                    );
+                }
+            }
+
+            // Updates the state of ancestors based on children states
+            function updateAncestorStates(node) {
+                let current = node.parent;
+                while (current) {
+                    const oldState = current.selected;
+                    current.selected = calculateFolderState(current);
+                    nodeMap.set(current.id, current); // Update map
+
+                    // If state didn't change, no need to update further up
+                    if (current.selected === oldState) {
+                        break;
+                    }
+                    current = current.parent;
+                }
+            }
+
+            // Calculates a folder's state (true, false, partial) based on its children
+            function calculateFolderState(folderNode) {
+                if (!folderNode.children || folderNode.children.length === 0) {
+                    // Folders with no children just reflect their own state.
+                    return typeof folderNode.selected === "boolean"
+                        ? folderNode.selected
+                        : false; // Default to false if state is indeterminate somehow
+                }
+
+                let hasTrue = false;
+                let hasFalse = false;
+                let hasPartial = false;
+
+                folderNode.children.forEach((child) => {
+                    // Get the authoritative state from the map
+                    const childNode = nodeMap.get(child.id);
+                    const childState = childNode ? childNode.selected : false; // Default to false if not found
+
+                    if (childState === true) hasTrue = true;
+                    else if (childState === false) hasFalse = true;
+                    else if (childState === "partial") hasPartial = true;
+                });
+
+                if (hasPartial || (hasTrue && hasFalse)) {
+                    return "partial";
+                } else if (hasTrue) {
+                    return true; // All children are true (or no children, handled above)
+                } else {
+                    return false; // All children are false
+                }
+            }
+
+            // Updates the visual state (.checked, .indeterminate) of all checkboxes
+            function updateAllCheckboxVisuals(node) {
+                const checkbox = document.querySelector(
+                    `input[type="checkbox"][data-id="${node.id}"]`,
+                );
+                if (checkbox) {
+                    const nodeState = nodeMap.get(node.id)?.selected; // Get latest state from map
+                    if (nodeState === "partial") {
+                        checkbox.checked = false;
+                        checkbox.indeterminate = true;
+                    } else {
+                        checkbox.checked = nodeState === true;
+                        checkbox.indeterminate = false;
+                    }
+                }
+
+                if (node.type === "folder" && node.children) {
+                    node.children.forEach((child) =>
+                        updateAllCheckboxVisuals(child),
+                    );
+                }
+            }
+
+            // --- Initial Rendering ---
+            preprocessTreeData(treeData); // Add IDs, state, parent links
+
+            // Render the tree
+            document
+                .getElementById("treeRoot")
+                .appendChild(buildTree(treeData, 0));
+        </script>
+    </body>
+</html>

@@ -296,16 +296,25 @@ pub fn FileTree(props: FileTreeProps) -> Element {
         let current_scope_id =
             current_scope_id().expect("use_memo running outside of a Dioxus scope");
 
-        // Read signal props and clone non-signal props to establish dependencies for the memo
-        let selected_paths_val = props.selected_paths.read().clone();
-        let files_val = props.all_files.clone();
-        let workspace_root_val = props.workspace_root.clone();
+        // Explicitly use the captured props fields for clarity and to ensure
+        // the memo is sensitive to their changes when the component re-renders.
+        let current_all_files = &props.all_files;
+        let current_workspace_root = &props.workspace_root;
+        let current_selected_paths = props.selected_paths.read().clone(); // Signal read
 
-        log::debug!("FileTree use_memo: Recomputing tree_nodes.");
+        log::debug!(
+            "FileTree use_memo: Recomputing tree_nodes. Files: {}, Selected: {}, WS Root: {}",
+            current_all_files.len(),
+            current_selected_paths.len(),
+            current_workspace_root.display()
+        );
 
         // Initial tree construction
-        let new_tree_blueprints =
-            build_tree_from_file_info(&files_val, &selected_paths_val, &workspace_root_val);
+        let new_tree_blueprints = build_tree_from_file_info(
+            current_all_files,       // Use the reference from captured props
+            &current_selected_paths, // Use the cloned signal value
+            current_workspace_root,  // Use the reference from captured props
+        );
 
         // Convert blueprints to FileTreeNodes
         let new_tree_nodes: Vec<FileTreeNode> = new_tree_blueprints

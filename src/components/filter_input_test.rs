@@ -1,7 +1,8 @@
 #![cfg(test)]
 
-use crate::components::filter_input::FilterType;
-use std::str::FromStr;
+use crate::components::filter_input::{FilterInput, FilterInputProps, FilterType};
+use dioxus::prelude::*;
+use dioxus_core::Element;
 
 #[test]
 fn test_filter_type_from_str() {

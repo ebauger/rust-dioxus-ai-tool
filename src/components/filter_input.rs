@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
+// use dioxus_core::ScopeId; // Removed unused import
 use std::fmt::{self, Display};
 use std::str::FromStr;
 

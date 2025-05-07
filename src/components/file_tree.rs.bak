@@ -1,0 +1,38 @@
+#![allow(non_snake_case)]
+use dioxus::prelude::*;
+
+// We'll define NodeData probably in tree_node.rs or a shared types module
+// For now, let's assume it exists.
+// use super::tree_node::NodeData;
+
+#[derive(Props, PartialEq, Clone)]
+pub struct FileTreeProps {
+    // pub nodes: Vec<NodeData>, // This will be the actual data
+    // For now, let's use a placeholder
+    pub root_path: String,
+}
+
+#[component]
+pub fn FileTree(props: FileTreeProps) -> Element {
+    // Placeholder rendering
+    // In the future, this will iterate over props.nodes
+    // and render TreeNode components.
+    rsx! {
+        div {
+            class: "p-2 font-mono text-sm",
+            h3 { "File Tree Component (Placeholder)" },
+            p { "Root: {props.root_path}" }
+            // Placeholder for actual tree rendering
+            // ul {
+            //     class: "list-none m-0 p-0",
+            //     // props.nodes.iter().map(|node_data| rsx! {
+            //     //     TreeNode {
+            //     //         key: "{node_data.id}", // Assuming NodeData has an id
+            //     //         data: node_data.clone(),
+            //     //         depth: 0
+            //     //     }\n            //     // })\n            // }\n        }\n    }\n}
+            //     // })
+            // }
+        }
+    })
+}

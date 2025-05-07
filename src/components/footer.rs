@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use dioxus::desktop::Config;
+// use dioxus::desktop::Config; // Removed unused import
 use dioxus::prelude::*;
 use std::collections::HashSet;
 use std::path::PathBuf;

@@ -1,17 +1,17 @@
-use ignore::WalkBuilder;
+// use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+// use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::fs;
+// use tokio::fs;
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 
-use crate::cache::TokenCache;
-use crate::tokenizer::{count_tokens, TokenEstimator};
+// use crate::cache::TokenCache;
+use crate::tokenizer::{/*count_tokens,*/ TokenEstimator};
 
 pub type ProgressCallback = Arc<Box<dyn Fn(usize, usize, String) + Send + Sync>>;
 
@@ -339,13 +339,68 @@ pub async fn list_files(dir: &Path) -> io::Result<Vec<FileInfo>> {
     Ok(files)
 }
 
+// New function for Story 1.3
+/// Recursively lists all files in a directory, returning their paths relative to the workspace root.
+///
+/// Excludes the .git directory and does not follow directory symlinks.
+pub fn get_all_workspace_files(workspace_root_path: &Path) -> io::Result<Vec<String>> {
+    let mut relative_files = Vec::new();
+    let walker = WalkDir::new(workspace_root_path).follow_links(false); // Do not follow symlinks
+
+    for entry_result in walker {
+        match entry_result {
+            Ok(entry) => {
+                let path = entry.path();
+
+                // Skip .git directory
+                if path.components().any(|c| c.as_os_str() == ".git") {
+                    if path.is_dir() {
+                        // entry.skip_subtree(); // WalkDir doesn't have skip_subtree directly on DirEntry
+                        // To skip a directory, filter_entry is better, or check here and continue.
+                        // For now, if it's part of .git, just skip this entry.
+                    }
+                    continue;
+                }
+
+                if path.is_file() {
+                    // Create relative path
+                    if let Ok(relative_path) = path.strip_prefix(workspace_root_path) {
+                        relative_files.push(relative_path.to_string_lossy().into_owned());
+                    } else {
+                        // This case should ideally not happen if path is from WalkDir starting at workspace_root_path
+                        // but handle defensively.
+                        eprintln!(
+                            "Warning: Could not create relative path for {}: Not a child of workspace root.",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "Warning: Error accessing entry during file listing: {}. Skipping.",
+                    err
+                );
+                // Optionally, decide if certain errors should halt the process
+                // For now, just log and continue.
+            }
+        }
+    }
+    Ok(relative_files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Write;
+    use std::fs;
+    use std::io::{self, Write};
     use tempfile::tempdir;
-    use tokio::fs;
+
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
+
+    // For async tests that need tokio::fs
+    use tokio::fs as tokio_fs;
 
     #[test]
     fn test_file_info_new() {
@@ -366,7 +421,9 @@ mod tests {
     async fn test_file_info_with_tokens() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
-        fs::write(&file_path, "Hello, world!\n").await.unwrap();
+        tokio_fs::write(&file_path, "Hello, world!\n")
+            .await
+            .unwrap();
 
         let estimator = TokenEstimator::CharDiv4;
         let info = FileInfo::with_tokens(file_path.clone(), &estimator).unwrap();
@@ -384,17 +441,21 @@ mod tests {
         // Create test files
         let file1_path = dir.path().join("file1.txt");
         println!("Creating file1: {}", file1_path.display());
-        fs::write(&file1_path, "Hello, world!\n").await.unwrap();
+        tokio_fs::write(&file1_path, "Hello, world!\n")
+            .await
+            .unwrap();
         assert!(file1_path.exists(), "file1.txt was not created");
 
         let file2_path = dir.path().join("file2.txt");
         println!("Creating file2: {}", file2_path.display());
-        fs::write(&file2_path, "Another test file\n").await.unwrap();
+        tokio_fs::write(&file2_path, "Another test file\n")
+            .await
+            .unwrap();
         assert!(file2_path.exists(), "file2.txt was not created");
 
         // Verify files are readable
-        let content1 = fs::read_to_string(&file1_path).await.unwrap();
-        let content2 = fs::read_to_string(&file2_path).await.unwrap();
+        let content1 = tokio_fs::read_to_string(&file1_path).await.unwrap();
+        let content2 = tokio_fs::read_to_string(&file2_path).await.unwrap();
         assert_eq!(content1, "Hello, world!\n");
         assert_eq!(content2, "Another test file\n");
 
@@ -417,14 +478,18 @@ mod tests {
 
         // Create a nested directory structure
         let nested_dir = dir_path.join("nested");
-        fs::create_dir(&nested_dir).await.unwrap();
+        tokio_fs::create_dir(&nested_dir).await.unwrap();
 
         // Create test files
         let file1_path = dir_path.join("file1.txt");
-        fs::write(&file1_path, "Hello, world!\n").await.unwrap();
+        tokio_fs::write(&file1_path, "Hello, world!\n")
+            .await
+            .unwrap();
 
         let file2_path = nested_dir.join("file2.txt");
-        fs::write(&file2_path, "Another test file\n").await.unwrap();
+        tokio_fs::write(&file2_path, "Another test file\n")
+            .await
+            .unwrap();
 
         let paths = vec![file1_path.clone(), file2_path.clone()];
         let result = concat_files(&paths).await.unwrap();
@@ -453,13 +518,19 @@ mod tests {
 
         // Create test files
         let file1_path = dir_path.join("file1.txt");
-        fs::write(&file1_path, "Content of file 1.").await.unwrap();
+        tokio_fs::write(&file1_path, "Content of file 1.")
+            .await
+            .unwrap();
 
         let file2_path = dir_path.join("file2.rs");
-        fs::write(&file2_path, "Content of file 2.").await.unwrap();
+        tokio_fs::write(&file2_path, "Content of file 2.")
+            .await
+            .unwrap();
 
         let file3_path = dir_path.join("file3.md");
-        fs::write(&file3_path, "Content of file 3.").await.unwrap();
+        tokio_fs::write(&file3_path, "Content of file 3.")
+            .await
+            .unwrap();
 
         let paths = vec![file1_path.clone(), file2_path.clone(), file3_path.clone()];
         let result = concat_files(&paths).await.unwrap();
@@ -487,5 +558,122 @@ mod tests {
             result, expected_sequence,
             "Concatenated string does not match expected sequence with @@@ headers."
         );
+    }
+
+    // Helper to create a basic file structure for testing
+    fn setup_test_directory() -> io::Result<tempfile::TempDir> {
+        let dir = tempdir()?;
+        let root = dir.path();
+
+        // Create some files and directories using std::fs
+        std::fs::File::create(root.join("file1.txt"))?;
+        std::fs::create_dir(root.join("subdir"))?;
+        std::fs::File::create(root.join("subdir").join("file2.rs"))?;
+        std::fs::create_dir_all(root.join(".git").join("objects"))?;
+        std::fs::File::create(root.join(".git").join("config"))?;
+        std::fs::File::create(root.join("another_file.md"))?;
+
+        #[cfg(unix)] // Guard symlink creation
+        {
+            unix_fs::symlink(root.join("file1.txt"), root.join("link_to_file1.txt"))?;
+        }
+        Ok(dir)
+    }
+
+    #[test]
+    fn test_get_all_workspace_files_basic() -> io::Result<()> {
+        let dir = setup_test_directory()?;
+        let root_path = dir.path();
+        let files = get_all_workspace_files(root_path)?;
+
+        let mut expected_files = vec![
+            "file1.txt".to_string(),
+            "subdir/file2.rs".to_string(),
+            "another_file.md".to_string(),
+        ];
+        if cfg!(unix) {
+            expected_files.push("link_to_file1.txt".to_string());
+        }
+
+        expected_files.sort();
+        let mut sorted_files = files;
+        sorted_files.sort();
+
+        assert_eq!(sorted_files, expected_files);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_all_workspace_files_excludes_dot_git() -> io::Result<()> {
+        let dir = setup_test_directory()?;
+        let root_path = dir.path();
+        let files = get_all_workspace_files(root_path)?;
+        for file_path in files {
+            assert!(
+                !file_path.starts_with(".git/") && !file_path.eq(".git"),
+                "File from .git directory was listed: {}",
+                file_path
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_all_workspace_files_empty_dir() -> io::Result<()> {
+        let dir = tempdir()?;
+        let files = get_all_workspace_files(dir.path())?;
+        assert!(files.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_all_workspace_files_handles_root_dot_git() -> io::Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git").join("hooks"))?;
+        std::fs::File::create(root.join(".git").join("HEAD"))?;
+        std::fs::File::create(root.join("somefile.txt"))?;
+        let files = get_all_workspace_files(root)?;
+        assert_eq!(files, vec!["somefile.txt".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_symlink_to_directory_not_followed() -> io::Result<()> {
+        if cfg!(windows) {
+            // Symlink creation is different and often requires admin on Windows
+            println!("Skipping symlink to directory test on Windows.");
+            return Ok(());
+        }
+        let dir = tempdir()?;
+        let root = dir.path();
+
+        std::fs::create_dir(root.join("actual_dir"))?;
+        std::fs::File::create(root.join("actual_dir").join("secret.txt"))?;
+        std::fs::File::create(root.join("top_level.txt"))?;
+
+        #[cfg(unix)] // Guard symlink creation
+        {
+            unix_fs::symlink(root.join("actual_dir"), root.join("linked_dir"))?;
+        }
+
+        let files = get_all_workspace_files(root)?;
+
+        let mut sorted_files = files;
+        sorted_files.sort();
+        // Expected: top_level.txt and files from actual_dir (as it's traversed directly).
+        // The symlink 'linked_dir' is not a file itself and is not followed.
+        let mut expected = vec![
+            "top_level.txt".to_string(),
+            "actual_dir/secret.txt".to_string(),
+        ];
+        expected.sort();
+
+        assert_eq!(sorted_files, expected);
+        assert!(
+            !sorted_files.iter().any(|f| f.starts_with("linked_dir/")),
+            "Should not list files through symlink to dir"
+        );
+        Ok(())
     }
 }

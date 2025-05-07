@@ -12,8 +12,10 @@ use tracing_subscriber::{fmt, prelude::*};
 mod cache;
 mod components;
 mod fs_utils;
+mod gitignore_handler;
 mod settings;
 mod tokenizer;
+mod workspace_event_handler;
 
 use components::{FileTree, Footer, Toolbar};
 use fs_utils::FileInfo;
@@ -188,8 +190,8 @@ fn App() -> Element {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("context-loader")
         .join("settings.json");
-    let settings = Settings::new(settings_file);
-    let mut settings = use_signal(|| settings);
+    let settings_data = Settings::new(settings_file);
+    let mut settings = use_signal(|| settings_data);
     let mut current_workspace = use_signal(|| None::<PathBuf>);
     let mut selected_files = use_signal(|| HashSet::new());
     let mut files = use_signal(|| Vec::<FileInfo>::new());
@@ -245,25 +247,20 @@ fn App() -> Element {
 
     // Handle menu events
     use_muda_event_handler(move |event| {
-        let mut settings = settings.clone();
-        let mut current_workspace = current_workspace.clone();
         if event.id == menu_ids.open {
-            // Show file dialog to open workspace
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // Handle opening workspace
                 println!("Opening workspace: {:?}", path);
                 current_workspace.set(Some(path.clone()));
                 spawn(async move {
-                    let mut current_settings = settings.read().clone();
-                    current_settings.add_recent_workspace(path.clone());
-                    if let Err(e) = current_settings.save().await {
+                    let mut current_settings_data = settings.read().clone();
+                    current_settings_data.add_recent_workspace(path.clone());
+                    if let Err(e) = current_settings_data.save().await {
                         log::error!("Failed to save settings: {}", e);
                     }
-                    settings.set(current_settings);
+                    settings.set(current_settings_data);
                 });
             }
         } else if menu_ids.recent_items.iter().any(|id| *id == event.id) {
-            // Find the selected recent workspace
             let index = menu_ids
                 .recent_items
                 .iter()
@@ -273,22 +270,21 @@ fn App() -> Element {
             println!("Opening recent workspace: {:?}", path);
             current_workspace.set(Some(path.clone()));
             spawn(async move {
-                let mut current_settings = settings.read().clone();
-                current_settings.add_recent_workspace(path.clone());
-                if let Err(e) = current_settings.save().await {
+                let mut current_settings_data = settings.read().clone();
+                current_settings_data.add_recent_workspace(path.clone());
+                if let Err(e) = current_settings_data.save().await {
                     log::error!("Failed to save settings: {}", e);
                 }
-                settings.set(current_settings);
+                settings.set(current_settings_data);
             });
         } else if event.id == menu_ids.clear_recents {
-            // Clear recent workspaces
             spawn(async move {
-                let mut current_settings = settings.read().clone();
-                current_settings.clear_recent_workspaces();
-                if let Err(e) = current_settings.save().await {
+                let mut current_settings_data = settings.read().clone();
+                current_settings_data.clear_recent_workspaces();
+                if let Err(e) = current_settings_data.save().await {
                     log::error!("Failed to save settings: {}", e);
                 }
-                settings.set(current_settings);
+                settings.set(current_settings_data);
             });
         }
     });
@@ -309,20 +305,17 @@ fn App() -> Element {
                             selected_files.set(HashSet::new());
                         },
                         on_estimator_change: move |estimator: TokenEstimator| {
-                            let mut settings = settings.clone();
-                            let current_workspace = current_workspace.read().clone();
-                            let mut files_signal = files.clone();
                             spawn(async move {
-                                let mut current_settings = settings.read().clone();
-                                current_settings.set_token_estimator(estimator.clone());
-                                if let Err(e) = current_settings.save().await {
+                                let mut current_settings_data = settings.read().clone();
+                                current_settings_data.set_token_estimator(estimator.clone());
+                                if let Err(e) = current_settings_data.save().await {
                                     log::error!("Failed to save settings: {}", e);
                                 }
-                                settings.set(current_settings);
+                                settings.set(current_settings_data);
                                 // Recompute tokens with new estimator
-                                if let Some(path) = current_workspace {
+                                if let Some(path) = current_workspace.read().clone() {
                                     match fs_utils::crawl(&path, &estimator, None).await {
-                                        Ok(list) => files_signal.set(list),
+                                        Ok(list) => files.set(list),
                                         Err(e) => log::error!("Failed to crawl workspace: {}", e),
                                     }
                                 }

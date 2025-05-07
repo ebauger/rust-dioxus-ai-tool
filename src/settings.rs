@@ -3,7 +3,6 @@ use std::path::PathBuf;
 
 use crate::tokenizer::TokenEstimator;
 use dirs_next::config_dir;
-use std::sync::Arc;
 
 const APP_NAME: &str = "context_loader";
 const SETTINGS_FILE: &str = "settings.json";
