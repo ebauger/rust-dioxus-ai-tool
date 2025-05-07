@@ -3,7 +3,7 @@ use dioxus::prelude::*;
 use dioxus_desktop::use_window;
 use log;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNodeType {
@@ -102,6 +102,7 @@ fn find_or_create_blueprint_node<'a>(
 pub fn build_tree_from_file_info(
     files: &[FileInfo],
     selected_paths: &HashSet<PathBuf>,
+    workspace_root: &Path,
 ) -> Vec<FileTreeNodeBlueprint> {
     // Returns blueprint
     if files.is_empty() {
@@ -115,58 +116,85 @@ pub fn build_tree_from_file_info(
     let mut unique_id_counter = 0;
 
     for file_info in &sorted_files {
-        let path = &file_info.path;
+        let absolute_file_path = &file_info.path;
+
+        // Determine path components relative to the workspace root for tree structure
+        let path_relative_to_workspace = match absolute_file_path.strip_prefix(workspace_root) {
+            Ok(p) if p.components().next().is_some() => p.to_path_buf(), // Ensure it's not empty
+            _ => {
+                // If not under workspace or is the workspace root itself (as a file),
+                // or strip_prefix results in an empty path.
+                // Fallback: use only the file name as a single top-level node.
+                // This makes it appear directly under an implicit root.
+                PathBuf::from(file_info.name.clone())
+            }
+        };
+
         let mut current_parent_children_list = &mut final_roots;
-        let mut current_accumulated_path = PathBuf::new();
+        // This will track the absolute path for folders being created.
+        // For files, we'll use absolute_file_path directly.
+        let mut accumulated_absolute_folder_path = workspace_root.to_path_buf();
 
-        let components: Vec<_> = path.components().collect();
-        let num_components = components.len();
+        let structural_components: Vec<_> = path_relative_to_workspace.components().collect();
 
-        for (idx, component_wrapper) in components.iter().enumerate() {
+        // If structural_components is empty (e.g. workspace_root is a file and file_info.path is that file)
+        // this loop won't run, which is fine. The fallback above handles creating a node from file_info.name.
+        // However, if the fallback results in a path with components (e.g. "file.txt"), this loop will run.
+
+        let num_structural_components = structural_components.len();
+
+        for (idx, component_wrapper) in structural_components.iter().enumerate() {
             let component_os_str = component_wrapper.as_os_str();
             let component_name = component_os_str.to_string_lossy().into_owned();
-            current_accumulated_path.push(component_os_str);
 
-            let is_last_component = idx == num_components - 1;
+            // For folders, build their absolute path piece by piece from workspace_root
+            // For the file itself (last component), we'll use its original absolute_file_path
+            if idx < num_structural_components - 1 {
+                // It's a folder component
+                accumulated_absolute_folder_path.push(component_os_str);
+            }
+
+            let is_last_component = idx == num_structural_components - 1;
 
             if is_last_component {
-                // It's a file
+                // It's a file node based on the original file_info
+                // Check if it already exists (e.g. if fallback created single component for it)
                 if !current_parent_children_list
                     .iter()
-                    .any(|n| n.path == *path && n.node_type == TreeNodeType::File)
+                    .any(|n| n.path == *absolute_file_path && n.node_type == TreeNodeType::File)
                 {
                     let id = unique_id_counter;
                     unique_id_counter += 1;
-                    let selection = if selected_paths.contains(path) {
+                    let selection = if selected_paths.contains(absolute_file_path) {
                         NodeSelectionState::Selected
                     } else {
                         NodeSelectionState::NotSelected
                     };
                     let file_node = FileTreeNodeBlueprint {
-                        // Create blueprint
                         id,
-                        name: file_info.name.clone(),
-                        path: path.clone(),
+                        // Use component_name for consistency if path_relative_to_workspace was just the filename
+                        // Or, use file_info.name if preferred. Let's use component_name for now.
+                        name: component_name.clone(), // component_name is from the structural component
+                        path: absolute_file_path.clone(), // Crucially, store the original absolute path
                         node_type: TreeNodeType::File,
                         children: Vec::new(),
                         is_expanded: false,
                         selection_state: selection,
-                        depth: idx,
+                        depth: idx, // Depth is based on iteration over relative components
                     };
                     current_parent_children_list.push(file_node);
                 }
             } else {
-                // It's a folder
-                let folder_path_clone = current_accumulated_path.clone();
+                // It's an intermediate folder
+                let folder_path_for_blueprint = accumulated_absolute_folder_path.clone();
                 let folder_node = find_or_create_blueprint_node(
-                    // Use blueprint helper
                     current_parent_children_list,
                     &component_name,
-                    &folder_path_clone,
+                    &folder_path_for_blueprint, // This is the absolute path for the folder
                     TreeNodeType::Folder,
                     &mut unique_id_counter,
-                    idx,
-                    idx == 0,
+                    idx,      // Depth relative to workspace root
+                    idx == 0, // is_expanded for top-level folders relative to workspace
                 );
                 current_parent_children_list = &mut folder_node.children;
             }
@@ -182,94 +210,73 @@ pub(crate) fn convert_blueprint_to_file_tree_node_recursive(
     blueprint: FileTreeNodeBlueprint,
     scope_id: ScopeId,
 ) -> FileTreeNode {
-    let children: Vec<FileTreeNode> = blueprint
+    // First, convert all children blueprints into actual FileTreeNodes.
+    // These children will have their selection_state signals correctly initialized
+    // because this function determines state bottom-up.
+    let children_nodes: Vec<FileTreeNode> = blueprint
         .children
         .into_iter()
         .map(|b| convert_blueprint_to_file_tree_node_recursive(b, scope_id))
         .collect();
+
+    // Now, determine the selection_state for the current node.
+    let current_node_selection_state: NodeSelectionState;
+    if blueprint.node_type == TreeNodeType::File {
+        // For files, the blueprint's selection_state is authoritative (derived from selected_paths).
+        current_node_selection_state = blueprint.selection_state;
+    } else {
+        // It's a Folder
+        if children_nodes.is_empty() {
+            // An empty folder has no selected children, so it's NotSelected.
+            // Or, if folders themselves can be selected, this might need parent's `selected_paths` check.
+            // For now, assuming empty folders are NotSelected unless `selected_paths` implies otherwise
+            // (which build_tree_from_file_info doesn't currently do for folders directly).
+            current_node_selection_state = NodeSelectionState::NotSelected;
+        } else {
+            let mut all_children_selected = true;
+            let mut any_child_selected = false;
+            let mut any_child_partially_selected = false;
+
+            for child_node in &children_nodes {
+                // Iterate over the newly created child FileTreeNodes
+                let child_state = *child_node.selection_state.read(); // Read from the child's signal
+                match child_state {
+                    NodeSelectionState::Selected => {
+                        any_child_selected = true;
+                        // all_children_selected remains true unless a non-selected child is found
+                    }
+                    NodeSelectionState::NotSelected => {
+                        all_children_selected = false;
+                    }
+                    NodeSelectionState::PartiallySelected => {
+                        all_children_selected = false;
+                        any_child_partially_selected = true;
+                    }
+                }
+            }
+
+            if all_children_selected {
+                current_node_selection_state = NodeSelectionState::Selected;
+            } else if any_child_selected || any_child_partially_selected {
+                current_node_selection_state = NodeSelectionState::PartiallySelected;
+            } else {
+                current_node_selection_state = NodeSelectionState::NotSelected;
+            }
+        }
+    }
 
     FileTreeNode {
         id: blueprint.id,
         name: blueprint.name,
         path: blueprint.path,
         node_type: blueprint.node_type,
-        children,
+        children: children_nodes, // Use the converted children
         is_expanded: Signal::new_in_scope(blueprint.is_expanded, scope_id),
-        selection_state: Signal::new_in_scope(blueprint.selection_state, scope_id),
+        // Initialize the signal directly with the calculated state.
+        selection_state: Signal::new_in_scope(current_node_selection_state, scope_id),
         depth: blueprint.depth,
     }
 }
-
-// --- Start of Story 8 Implementation ---
-
-// Task 8.1: Helper function to calculate a folder's selection state based on its children.
-pub fn calculate_folder_selection_state(folder_node: &FileTreeNode) -> NodeSelectionState {
-    if folder_node.node_type == TreeNodeType::File {
-        // This function is intended for folders. If called on a file,
-        // it should ideally not happen, but return its own state as a fallback.
-        return *folder_node.selection_state.read();
-    }
-
-    if folder_node.children.is_empty() {
-        // An empty folder has no selected children, so it's NotSelected.
-        return NodeSelectionState::NotSelected;
-    }
-
-    let mut all_children_selected = true;
-    let mut any_child_selected = false;
-    let mut any_child_partially_selected = false;
-
-    for child in &folder_node.children {
-        let child_state = *child.selection_state.read();
-        match child_state {
-            NodeSelectionState::Selected => {
-                any_child_selected = true;
-                // If even one child is not fully selected, the parent cannot be fully selected.
-            }
-            NodeSelectionState::NotSelected => {
-                all_children_selected = false;
-            }
-            NodeSelectionState::PartiallySelected => {
-                all_children_selected = false;
-                any_child_partially_selected = true;
-            }
-        }
-    }
-
-    if all_children_selected {
-        NodeSelectionState::Selected
-    } else if any_child_selected || any_child_partially_selected {
-        NodeSelectionState::PartiallySelected
-    } else {
-        NodeSelectionState::NotSelected
-    }
-}
-
-// Task 8.2 (Helper): Recursively update folder selection states from bottom up.
-// Making it pub(crate) for testing.
-pub(crate) fn update_folder_selection_states_recursive(nodes: &[FileTreeNode]) {
-    for node in nodes {
-        if node.node_type == TreeNodeType::Folder {
-            // First, ensure all children (and their descendants) are up-to-date.
-            // This makes it a bottom-up update for the current node.
-            if !node.children.is_empty() {
-                update_folder_selection_states_recursive(&node.children);
-            }
-
-            // Now calculate this folder's state based on its (now updated) children.
-            let new_calculated_state = calculate_folder_selection_state(node);
-
-            // Only update the signal if the state has actually changed.
-            // Signal::set takes &mut self, so the signal variable needs to be mutable.
-            let mut selection_signal = node.selection_state;
-            if *selection_signal.read() != new_calculated_state {
-                selection_signal.set(new_calculated_state);
-            }
-        }
-    }
-}
-
-// --- End of Story 8 Implementation ---
 
 #[derive(Props, Clone, PartialEq)]
 pub struct FileTreeProps {
@@ -277,29 +284,36 @@ pub struct FileTreeProps {
     pub selected_paths: Signal<HashSet<PathBuf>>,
     pub on_select_all: EventHandler<()>,
     pub on_deselect_all: EventHandler<()>,
+    pub workspace_root: PathBuf,
 }
 
 #[allow(non_snake_case)]
 pub fn FileTree(props: FileTreeProps) -> Element {
-    let mut tree_display_nodes = use_signal(Vec::new);
-
     let all_files_clone_for_buttons = props.all_files.clone();
     let selected_paths_for_buttons = props.selected_paths;
 
-    use_effect(move || {
-        // Correctly obtain scope_id for convert_blueprint_to_file_tree_node_recursive
-        let effect_scope_id = current_scope_id().expect("use_effect must have a scope_id");
+    let tree_nodes_memo = use_memo(move || {
+        let current_scope_id =
+            current_scope_id().expect("use_memo running outside of a Dioxus scope");
 
-        let blueprints = build_tree_from_file_info(&props.all_files, &props.selected_paths.read());
+        // Read signal props and clone non-signal props to establish dependencies for the memo
+        let selected_paths_val = props.selected_paths.read().clone();
+        let files_val = props.all_files.clone();
+        let workspace_root_val = props.workspace_root.clone();
 
-        let new_display_nodes: Vec<FileTreeNode> = blueprints
+        log::debug!("FileTree use_memo: Recomputing tree_nodes.");
+
+        // Initial tree construction
+        let new_tree_blueprints =
+            build_tree_from_file_info(&files_val, &selected_paths_val, &workspace_root_val);
+
+        // Convert blueprints to FileTreeNodes
+        let new_tree_nodes: Vec<FileTreeNode> = new_tree_blueprints
             .into_iter()
-            .map(|b| convert_blueprint_to_file_tree_node_recursive(b, effect_scope_id)) // Pass correct scope_id
+            .map(|bp| convert_blueprint_to_file_tree_node_recursive(bp, current_scope_id))
             .collect();
 
-        update_folder_selection_states_recursive(&new_display_nodes);
-
-        tree_display_nodes.set(new_display_nodes);
+        new_tree_nodes // This Vec<FileTreeNode> is the value of the memo
     });
 
     rsx! {
@@ -333,12 +347,11 @@ pub fn FileTree(props: FileTreeProps) -> Element {
             }
             ul {
                 class: "file-tree-list p-0 m-0 list-none",
-                for node in tree_display_nodes.read().iter() {
+                for node in tree_nodes_memo.read().iter() {
                     FileTreeNodeDisplay {
                         key: "{node.id}",
                         node: node.clone(),
-                        selected_paths: selected_paths_for_buttons, // Pass the copied signal to children if they also modify it, or original props.selected_paths
-                                                                  // For now, FileTreeNodeDisplay takes Signal<HashSet<PathBuf>>, so selected_paths_for_buttons is fine.
+                        selected_paths: selected_paths_for_buttons,
                     }
                 }
             }
@@ -406,22 +419,22 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
         li {
             class: "file-tree-node",
             key: "{props.node.id}", // Key for Dioxus list rendering
-            div {
+        div {
                 class: "node-row flex items-center hover:bg-gray-200 dark:hover:bg-gray-700 p-1 rounded",
-                style: "{indent_style}",
+            style: "{indent_style}",
                 onclick: move |_| {
                     if node_type_for_click_logic == TreeNodeType::Folder {
                         let current_value = *is_expanded_signal.read();
                         is_expanded_signal.set(!current_value);
                     }
                 },
-                input {
-                    id: "{unique_checkbox_id}",
+            input {
+                id: "{unique_checkbox_id}",
                     "type": "checkbox",
                     class: "mr-2 form-checkbox rounded text-blue-500 focus:ring-blue-500 dark:text-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600",
                     checked: props.node.selection_state.read().clone() == NodeSelectionState::Selected,
                     // Indeterminate state handled by use_effect above
-                    oninput: move |event| {
+                oninput: move |event| {
                         let is_checked = event.value().parse::<bool>().unwrap_or_else(|_| {
                             log::warn!("Could not parse checkbox value: '{}', defaulting to false.", event.value());
                             false
@@ -439,12 +452,12 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
                             TreeNodeType::Folder => {
                                 let descendant_file_paths = node_for_input.collect_all_file_paths_recursive();
                                 for path in descendant_file_paths {
-                                    if is_checked {
+                            if is_checked {
                                         selected_paths_writer.insert(path);
-                                    } else {
+                            } else {
                                         selected_paths_writer.remove(&path);
-                                    }
-                                }
+                            }
+                        }
                                 // Also update the folder's own path if folders are directly selectable
                                 // For now, assuming folders reflect state of children.
                                 // If folders themselves are entities to be selected (e.g. to select the folder itself),
@@ -452,27 +465,27 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
                                 // might need to include the folder path if a folder node can be a "target" itself.
                                 // Based on the task "A file node is Selected if its path is in selected_paths",
                                 // it seems only files are directly tracked in `selected_paths`.
-                            }
                         }
                     }
+                }
                 },
                 span {
                     class: "node-icon mr-1",
                     "{icon}"
-                }
-                span {
+            }
+            span {
                     class: "node-name",
                     "{props.node.name}"
-                }
             }
-            if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
+        }
+        if props.node.node_type == TreeNodeType::Folder && *props.node.is_expanded.read() {
                 ul {
                     class: "list-none", // Ensure nested lists also don't have bullets
                     for child_node in &props.node.children {
-                        FileTreeNodeDisplay {
+                FileTreeNodeDisplay {
                             key: "{child_node.id}",
-                            node: child_node.clone(),
-                            selected_paths: props.selected_paths,
+                    node: child_node.clone(),
+                    selected_paths: props.selected_paths,
                         }
                     }
                 }

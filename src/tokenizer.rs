@@ -41,7 +41,7 @@ impl FromStr for TokenEstimator {
 
 impl Default for TokenEstimator {
     fn default() -> Self {
-        Self::Cl100k
+        Self::CharDiv4
     }
 }
 

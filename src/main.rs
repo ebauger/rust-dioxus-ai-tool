@@ -15,7 +15,7 @@ mod fs_utils;
 mod settings;
 mod tokenizer;
 
-use components::{FileList, Footer, Toolbar};
+use components::{FileTree, Footer, Toolbar};
 use fs_utils::FileInfo;
 use settings::Settings;
 use tokenizer::TokenEstimator;
@@ -334,16 +334,12 @@ fn App() -> Element {
                     // File list scrollable area
                     div {
                         class: "flex-1 overflow-auto p-4",
-                        FileList {
-                            files: files.read().clone(),
-                            selected_files: selected_files.clone(),
-                            on_select_all: move |_| {
-                                let all_paths: HashSet<PathBuf> = files.read().iter().map(|f| f.path.clone()).collect();
-                                selected_files.set(all_paths);
-                            },
-                            on_deselect_all: move |_| {
-                                selected_files.set(HashSet::new());
-                            },
+                        FileTree {
+                            all_files: files.read().clone(),
+                            selected_paths: selected_files.clone(),
+                            on_select_all: |_| {},
+                            on_deselect_all: |_| {},
+                            workspace_root: current_workspace.read().clone().expect("Workspace root must exist when FileTree is rendered")
                         }
                     }
                     Footer {
