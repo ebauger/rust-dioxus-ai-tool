@@ -87,11 +87,11 @@ pub fn Toolbar(props: ToolbarProps) -> Element {
 
     rsx! {
         div {
-            class: "flex items-center space-x-4 p-4 bg-gray-100 dark:bg-gray-800",
+            class: "flex items-center space-x-4 p-4 bg-light-card border-b border-light-border",
 
             // Tokenizer dropdown
             select {
-                class: "px-4 py-2 bg-white dark:bg-gray-700 rounded",
+                class: "px-4 py-2 bg-light-background border border-light-border text-light-foreground rounded",
                 value: "{current_estimator}",
                 onchange: move |evt| {
                     if let Ok(estimator) = evt.value().parse::<TokenEstimator>() {
