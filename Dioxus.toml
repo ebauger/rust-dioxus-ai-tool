@@ -46,7 +46,7 @@ binaryen = { wasm_opt = true }
 
 # Desktop Configuration
 [desktop]
-before_build = "npx tailwindcss -i ./input.css -o ./assets/tailwind.css"
+before_build = "pnpx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css"
 
 # After build hook seems non-functional for desktop, use ./fix_bundle_name.sh instead
 after_build = []

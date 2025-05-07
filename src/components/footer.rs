@@ -38,13 +38,13 @@ pub fn Footer(props: FooterProps) -> Element {
 
     rsx! {
         div {
-            class: "fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 p-4",
+            class: "fixed bottom-0 left-0 right-0 bg-light-card border-t border-light-border p-4",
             div {
                 class: "flex justify-between items-center max-w-7xl mx-auto",
                 div {
                     class: "flex items-center space-x-2",
                     span {
-                        class: if is_over_limit { "text-red-500 font-medium" } else { "text-gray-700 dark:text-gray-300 font-medium" },
+                        class: if is_over_limit { "text-red-500 font-medium" } else { "text-light-foreground font-medium" },
                         "Total tokens: {total}"
                     }
                     if is_over_limit {
@@ -65,7 +65,7 @@ pub fn Footer(props: FooterProps) -> Element {
                     }
                 }
                 div {
-                    class: "text-sm text-gray-500 dark:text-gray-400",
+                    class: "text-sm text-light-secondary-text",
                     "Estimation via {current_estimator.name()}"
                 }
             }

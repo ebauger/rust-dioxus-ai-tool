@@ -329,9 +329,9 @@ pub fn FileTree(props: FileTreeProps) -> Element {
         div {
             class: "file-tree-container",
             div {
-                class: "file-tree-controls p-2 flex space-x-2",
+                class: "file-tree-controls p-2 flex space-x-2 border-b border-light-border",
                 button {
-                    class: "px-3 py-1 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:bg-blue-500 dark:hover:bg-blue-600 dark:focus:ring-offset-gray-800",
+                    class: "px-3 py-1 text-sm font-medium text-white bg-light-primary rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500",
                     onclick: move |_| {
                         let mut all_file_paths_hs = HashSet::new();
                         // Use the cloned all_files specific to this button
@@ -345,7 +345,7 @@ pub fn FileTree(props: FileTreeProps) -> Element {
                     "Select All"
                 }
                 button {
-                    class: "px-3 py-1 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400 dark:text-gray-200 dark:bg-gray-600 dark:hover:bg-gray-500 dark:focus:ring-offset-gray-800",
+                    class: "px-3 py-1 text-sm font-medium text-light-foreground bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400",
                     onclick: move |_| {
                         // Signal is Copy, get a mutable copy for set()
                         let mut sp = selected_paths_for_buttons; // Use the copied signal
@@ -429,7 +429,7 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
             class: "file-tree-node",
             key: "{props.node.id}", // Key for Dioxus list rendering
         div {
-                class: "node-row flex items-center hover:bg-gray-200 dark:hover:bg-gray-700 p-1 rounded",
+                class: "node-row flex items-center hover:bg-gray-100 p-1 rounded",
             style: "{indent_style}",
                 onclick: move |_| {
                     if node_type_for_click_logic == TreeNodeType::Folder {
@@ -440,7 +440,7 @@ pub fn FileTreeNodeDisplay(props: FileTreeNodeDisplayProps) -> Element {
             input {
                 id: "{unique_checkbox_id}",
                     "type": "checkbox",
-                    class: "mr-2 form-checkbox rounded text-blue-500 focus:ring-blue-500 dark:text-blue-400 dark:focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600",
+                    class: "mr-2 form-checkbox rounded text-blue-500 focus:ring-blue-500 bg-light-background border-light-border",
                     checked: props.node.selection_state.read().clone() == NodeSelectionState::Selected,
                     // Indeterminate state handled by use_effect above
                 oninput: move |event| {

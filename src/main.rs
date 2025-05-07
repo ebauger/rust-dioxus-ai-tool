@@ -316,8 +316,14 @@ fn App() -> Element {
     });
 
     rsx! {
+        dioxus::prelude::document::Stylesheet {
+            href: asset!("/assets/tailwind.css")
+        }
+        dioxus::prelude::document::Stylesheet {
+            href: asset!("/assets/main.css")
+        }
         div {
-            class: "flex flex-col h-screen",
+            class: "flex flex-col h-screen bg-light-background text-light-foreground",
             if let Some(_) = current_workspace.read().as_ref() {
                 div {
                     class: "flex flex-col flex-1 overflow-hidden", // take remaining height
@@ -369,10 +375,10 @@ fn App() -> Element {
                 }
             } else {
                 div {
-                    class: "flex flex-col items-center justify-center h-full w-full", // Added w-full
+                    class: "flex flex-col items-center justify-center h-full w-full",
                     // Welcome message removed
                     div {
-                        class: "text-lg text-gray-600",
+                        class: "text-lg text-light-secondary-text",
                         "Open a workspace to get started"
                     }
                 }
@@ -416,13 +422,7 @@ fn main() {
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .with_resizable(true);
 
-    let config = Config::default()
-        .with_window(window)
-        .with_menu(Some(menu))
-        .with_custom_head(format!(
-            r#"<link rel="stylesheet" href="/{}"/>"#,
-            asset!("/assets/main.css")
-        ));
+    let config = Config::default().with_window(window).with_menu(Some(menu));
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
