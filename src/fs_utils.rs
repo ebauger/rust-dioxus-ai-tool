@@ -352,13 +352,20 @@ pub fn get_all_workspace_files(workspace_root_path: &Path) -> io::Result<Vec<Str
             Ok(entry) => {
                 let path = entry.path();
 
-                // Skip .git directory
-                if path.components().any(|c| c.as_os_str() == ".git") {
+                // Skip .git directory AND root .gitignore file
+                let is_dot_git = path.components().any(|c| c.as_os_str() == ".git");
+                let is_root_gitignore = path == workspace_root_path.join(".gitignore");
+
+                if is_dot_git {
+                    // entry.skip_subtree(); // WalkDir doesn't have skip_subtree directly on DirEntry
+                    // To skip a directory, filter_entry is better, or check here and continue.
+                    // For now, if it's part of .git, just skip this entry.
                     if path.is_dir() {
-                        // entry.skip_subtree(); // WalkDir doesn't have skip_subtree directly on DirEntry
-                        // To skip a directory, filter_entry is better, or check here and continue.
-                        // For now, if it's part of .git, just skip this entry.
+                        // Potentially skip subtree here if using filter_entry
                     }
+                    continue;
+                }
+                if is_root_gitignore {
                     continue;
                 }
 
