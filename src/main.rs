@@ -200,14 +200,40 @@ fn App() -> Element {
     use_effect(move || {
         if let Some(path) = current_workspace.read().clone() {
             let mut files_signal = files.clone();
+            let mut selected_files_signal = selected_files.clone();
+            let workspace_path_for_handler = path.clone();
+
             spawn(async move {
                 match fs_utils::list_files(&path).await {
                     Ok(list) => files_signal.set(list),
                     Err(e) => log::error!("Failed to list workspace files: {}", e),
                 }
+
+                let workspace_path_str = workspace_path_for_handler.to_string_lossy().into_owned();
+                match crate::workspace_event_handler::handle_workspace_opened(workspace_path_str) {
+                    Ok(initially_selected_relative_paths) => {
+                        let workspace_root = workspace_path_for_handler;
+                        let initial_selection_absolute: HashSet<PathBuf> =
+                            initially_selected_relative_paths
+                                .into_iter()
+                                .map(|rel_path| workspace_root.join(rel_path))
+                                .collect();
+
+                        selected_files_signal.set(initial_selection_absolute);
+                        log::info!("Initial file selection complete based on .gitignore.");
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to determine initial file selection: {}. Resetting selection.",
+                            e
+                        );
+                        selected_files_signal.set(HashSet::new());
+                    }
+                }
             });
         } else {
             files.set(Vec::new());
+            selected_files.set(HashSet::new());
         }
     });
 
